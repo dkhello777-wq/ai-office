@@ -1,76 +1,100 @@
 <!doctype html>
 <html lang="ko">
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#14161a">
-<title>AI Hub</title>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1b1d22">
+<title>AI 오피스</title>
 <link rel="stylesheet" href="/style.css">
 <body>
-<header id="top">
-  <div class="brand">AI Hub</div>
-  <div id="conn" class="conn">연결 중…</div>
-  <span id="who" class="who"></span>
-  <span id="budget" class="budget" title="이번 달 토큰 사용량 (입력+출력) / 상한" hidden></span>
-  <button id="auth-check" class="btn small" title="비밀값 없이 각 CLI의 로그인 상태만 확인" hidden>인증 확인</button>
-  <button id="memory-open" class="btn small" title="모든 프롬프트 앞에 붙는 내 메모리(memory.md)" hidden>메모리</button>
-  <button id="admin-open" class="btn small" hidden>관리</button>
-  <button id="logout" class="btn small" hidden>로그아웃</button>
-  <nav id="tabs" class="tabs"></nav>
-</header>
 
-<!-- 계정: 로그인 / 초대 코드 가입 -->
+<!-- 최초 비밀번호 설정 / 로그인 -->
 <section id="gate" hidden>
   <div class="card">
-    <div class="gate-tabs"><button data-mode="login" class="on">로그인</button><button data-mode="signup">초대 코드로 가입</button></div>
+    <div class="logo">🏢</div>
+    <h1 id="gate-title">AI 오피스</h1>
     <p id="gate-hint" class="hint"></p>
     <form id="gate-form" autocomplete="on">
-      <label id="f-invite" hidden>초대 코드 <input name="invite" autocomplete="one-time-code" placeholder="관리자에게 받은 코드"></label>
-      <label>아이디 <input name="username" autocomplete="username" placeholder="소문자·숫자·._- 3~32자" required></label>
-      <label>비밀번호 <input name="password" type="password" autocomplete="current-password" placeholder="10자 이상" required></label>
+      <input name="password" type="password" autocomplete="current-password" placeholder="비밀번호 (10자 이상)" required>
+      <input id="f-password2" name="password2" type="password" autocomplete="new-password" placeholder="비밀번호 확인" hidden>
       <button class="btn primary" type="submit">들어가기</button>
       <span id="gate-msg" class="err"></span>
     </form>
-    <p class="hint small">각 사용자는 자기 폴더 안에서만 작업하고, AI 로그인(구독)도 사용자별로 분리됩니다.</p>
   </div>
 </section>
 
-<main id="panels"></main>
+<div id="app" hidden>
+  <header id="top">
+    <div class="room">
+      <div class="room-name">AI 오피스 <span id="room-count" class="count"></span></div>
+      <div id="conn" class="conn">연결 중…</div>
+    </div>
+    <button id="people-open" class="avatars" title="참여자"></button>
+    <button id="menu-open" class="icon" title="메뉴">☰</button>
+  </header>
 
-<section id="files">
-  <div class="files-head">
-    <span>내 파일 <small>(shared/)</small></span>
-    <label class="btn small">업로드<input id="upload" type="file" multiple hidden></label>
-  </div>
-  <ul id="filelist"></ul>
-</section>
+  <main id="chat"><div id="timeline"></div></main>
 
-<footer id="composer">
-  <div class="mode-row">
-    <div class="modes"><button id="mode-broadcast" class="mode on" title="같은 메시지를 선택한 AI 전부에게 동시에">동시 전송</button><button id="mode-orch" class="mode" title="팀장 AI 가 목표를 쪼개 팀원 AI 에게 나누고 결과를 종합">오케스트레이터</button></div>
-    <div id="orch-opts" class="orch-opts" hidden>팀장 <select id="lead"></select> <span class="hint-inline">팀원은 아래에서 선택 · 팀장이 계획(JSON) → 팀원 병렬 실행 → 팀장 종합</span></div>
-  </div>
-  <div id="targets" class="targets"></div>
-  <div id="attach" class="attach"></div>
-  <textarea id="text" rows="2" placeholder="메시지… (선택한 AI 전부에게 동시에 보냄)"></textarea>
-  <button id="send" class="btn primary">보내기</button>
-</footer>
+  <footer id="composer">
+    <div id="route" class="route">
+      <button id="route-all" class="chip on" title="연결된 AI 전부에게 동시에 보냄">모두에게</button>
+      <button id="route-lead" class="chip" title="팀장이 받아서 팀원에게 나누고 종합">팀장에게</button>
+      <span id="route-hint" class="route-hint"></span>
+    </div>
+    <div id="attach-row" class="attach-row" hidden></div>
+    <div class="row">
+      <label class="icon" title="파일 첨부">📎<input id="upload" type="file" multiple hidden></label>
+      <textarea id="text" rows="1" placeholder="메시지… (@클로드 처럼 이름을 부르면 그 AI 에게만)"></textarea>
+      <button id="send" class="send" title="보내기 (Ctrl+Enter)">➤</button>
+    </div>
+  </footer>
+</div>
 
-<!-- 관리자: 초대 코드 발급·사용자 목록 -->
-<dialog id="admin">
-  <div class="dlg-head"><b>관리</b><button id="admin-close" class="btn small">닫기</button></div>
-  <div class="dlg-row"><button id="inv-user" class="btn small">사용자 초대 코드 발급</button><button id="inv-admin" class="btn small">관리자 초대 코드 발급</button></div>
-  <div id="inv-new" class="inv-new" hidden></div>
-  <h4>초대 코드</h4><table id="inv-table"></table>
-  <h4>사용자</h4><p class="hint small" style="margin:0 0 4px">월 토큰 상한: 비우면 기본값(config budget.monthlyTokens, 0 = 무제한). 입력+출력 합산이며 usage 를 안 주는 CLI 는 0 으로 잡힙니다.</p><table id="user-table"></table>
+<!-- 참여자 (연결한 AI) -->
+<dialog id="people" class="sheet">
+  <div class="sheet-head"><b>참여자</b><span class="hint">구독 중인 AI 를 연결하면 이 방에 들어옵니다</span><button class="icon close" data-close="people">✕</button></div>
+  <div id="people-list"></div>
 </dialog>
 
-<!-- 메모리: 모든 프롬프트 앞에 주입되는 memory.md -->
-<dialog id="memory">
-  <div class="dlg-head"><b>내 메모리 (memory.md)</b><button id="memory-close" class="btn small">닫기</button></div>
-  <p class="hint small" style="margin:0 0 8px">여기 적은 내용은 <b>이 계정의 모든 메시지 앞에</b> 붙어 AI 에게 전달됩니다(작업 폴더의 memory.md 와 같은 파일이라 CLI 도 직접 읽을 수 있음). 프로젝트 규칙·결정·취향처럼 매번 반복해 말하던 것을 적어 두세요. 답변 카드의 "메모리에 추가" 로 답변 전문을 덧붙일 수도 있습니다.</p>
-  <textarea id="memory-text" rows="16" spellcheck="false"></textarea>
-  <div class="dlg-row" style="margin-top:8px;align-items:center"><button id="memory-save" class="btn primary small">저장</button><span id="memory-info" class="hint small" style="margin:0"></span></div>
+<!-- 메뉴 -->
+<dialog id="menu" class="sheet">
+  <div class="sheet-head"><b>메뉴</b><button class="icon close" data-close="menu">✕</button></div>
+  <div class="menu-list">
+    <button id="m-memory">🧠 메모리 <small id="memory-badge"></small></button>
+    <button id="m-files">📁 파일 <small id="files-badge"></small></button>
+    <button id="m-budget">📊 토큰 예산 <small id="budget-badge"></small></button>
+    <button id="m-auth">🔄 인증 상태 다시 확인</button>
+    <button id="m-password">🔑 비밀번호 변경</button>
+    <button id="m-logout">🚪 로그아웃</button>
+  </div>
+</dialog>
+
+<dialog id="memory" class="sheet">
+  <div class="sheet-head"><b>메모리</b><span class="hint">모든 메시지 앞에 붙습니다 (memory.md)</span><button class="icon close" data-close="memory">✕</button></div>
+  <textarea id="memory-text" rows="14" placeholder="# 나에 대해&#10;- 답은 한국어로&#10;- 내 사업: ..."></textarea>
+  <div class="row end"><span id="memory-info" class="hint"></span><button id="memory-save" class="btn primary">저장</button></div>
+</dialog>
+
+<dialog id="files" class="sheet">
+  <div class="sheet-head"><b>파일</b><span class="hint">AI 가 작업 폴더에서 직접 읽습니다</span><button class="icon close" data-close="files">✕</button></div>
+  <ul id="filelist"></ul>
+</dialog>
+
+<dialog id="budget" class="sheet">
+  <div class="sheet-head"><b>토큰 예산</b><button class="icon close" data-close="budget">✕</button></div>
+  <p id="budget-now" class="hint"></p>
+  <div class="row"><input id="budget-in" type="number" min="0" step="10000" placeholder="월 상한 (비우면 무제한)"><button id="budget-save" class="btn primary">저장</button></div>
+  <p class="hint small">상한에 닿으면 CLI 를 띄우기 전에 차단합니다. usage 를 안 주는 CLI 는 0 으로 잡혀 보조 수단일 뿐입니다.</p>
+</dialog>
+
+<dialog id="password" class="sheet">
+  <div class="sheet-head"><b>비밀번호 변경</b><button class="icon close" data-close="password">✕</button></div>
+  <form id="password-form">
+    <input name="current" type="password" autocomplete="current-password" placeholder="현재 비밀번호" required>
+    <input name="next" type="password" autocomplete="new-password" placeholder="새 비밀번호 (10자 이상)" required>
+    <div class="row end"><span id="password-msg" class="err"></span><button class="btn primary" type="submit">변경 (모든 기기 재로그인)</button></div>
+  </form>
 </dialog>
 
 <script src="/app.js"></script>
