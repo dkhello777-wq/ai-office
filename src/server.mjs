@@ -22,7 +22,7 @@ await mkdir(dataDir,{recursive:true,mode:0o700});await mkdir(usersDir,{recursive
 for(const d of [dataDir,usersDir]){try{await chmod(d,0o700);}catch{}}
 const adapters=config.adapters.filter(a=>a.enabled);
 const MIME={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.txt':'text/plain; charset=utf-8','.md':'text/plain; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.pdf':'application/pdf','.webmanifest':'application/manifest+json'};
-const BUDGET_DEFAULT=Number(config.budget?.monthlyTokens??0);        // 0 = 무제한
+const BUDGET_DEFAULT=Number(process.env.HUB_MONTHLY_TOKENS??config.budget?.monthlyTokens??0)||0;   // 0 = 무제한 (환경변수 HUB_MONTHLY_TOKENS 가 config 보다 우선)
 const MEMORY_MAX=Number(config.memory?.maxChars??20000);              // 프롬프트에 주입하는 메모리 상한(초과분은 앞부분을 잘라 넣지 않고, 화면에 경고)
 const ORCH=config.orchestrate??{};
 const ORCH_MAX_TASKS=Number(ORCH.maxTasks??6);
