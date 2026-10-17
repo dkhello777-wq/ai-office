@@ -9,7 +9,7 @@ import {once} from 'node:events';
 import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {Accounts} from '../src/accounts.mjs';
+import {Owner} from '../src/owner.mjs';
 import {Store} from '../src/store.mjs';
 const ROOT=fileURLToPath(new URL('../',import.meta.url));
 const delay=ms=>new Promise(r=>setTimeout(r,ms));
@@ -17,21 +17,21 @@ const temp=()=>mkdtemp(path.join(os.tmpdir(),'hub-v061-review-'));
 async function poll(fn,ms=6000){const end=Date.now()+ms;while(Date.now()<end){const v=await fn();if(v)return v;await delay(25);}throw Error('fixture timeout');}
 async function accountFixture(t){
   const d=await temp();t.after(()=>rm(d,{recursive:true,force:true}));
-  const a=new Accounts(d);await a.load();const code=await a.ensureBootstrap();
-  const r=await a.signup({inviteCode:code,username:'tester',password:'synthetic-password'});assert.equal(r.user.id,1);
+  const a=new Owner(d);await a.load();
+  const r=await a.setup({password:'synthetic-password'});assert.equal(r.user.id,1);
   return {d,a};
 }
 
 test('G01a session expiry missing or malformed must never authorize a token',async t=>{
   const {d,a}=await accountFixture(t);
-  const login=await a.login({username:'tester',password:'synthetic-password',key:'fixture'});
+  const login=await a.login({password:'synthetic-password',key:'fixture'});
   const f=path.join(d,'sessions.json'),original=JSON.parse(await readFile(f,'utf8'));
   const observations=[];
   for(const expiry of [undefined,'not-a-date']){
     const data=structuredClone(original);const record=Object.values(data.sessions)[0];
     if(expiry===undefined)delete record.expiresAt;else record.expiresAt=expiry;
     const raw=JSON.stringify(data);await writeFile(f,raw);
-    const b=new Accounts(d);let rejected=false;
+    const b=new Owner(d);let rejected=false;
     try{await b.load();}catch(e){assert.equal(e.message,'accounts_corrupt');rejected=true;}
     const authorized=!rejected&&Boolean(b.userForToken(login.token));
     observations.push({expiry:expiry??'missing',loadRejected:rejected,authorized});
@@ -39,18 +39,6 @@ test('G01a session expiry missing or malformed must never authorize a token',asy
   }
   t.diagnostic(JSON.stringify(observations));
   assert.ok(observations.every(x=>!x.authorized),'Invalid expiry bypasses the expiry check');
-});
-
-test('G01b invite expiry with invalid date must not stay open',async t=>{
-  const {d,a}=await accountFixture(t);
-  const inv=await a.createInvite({createdBy:'tester'});
-  const f=path.join(d,'accounts.json'),data=JSON.parse(await readFile(f,'utf8'));
-  data.invites.find(i=>i.id===inv.invite.id).expiresAt='not-a-date';
-  await writeFile(f,JSON.stringify(data));const b=new Accounts(d);let rejected=false;
-  try{await b.load();}catch(e){assert.equal(e.message,'accounts_corrupt');rejected=true;}
-  const open=!rejected&&Boolean(b.findOpenInvite(inv.code));
-  t.diagnostic('loadRejected='+rejected+'; invalid-date invite accepted='+open);
-  assert.equal(open,false,'Malformed invite expiry is treated as unexpired');
 });
 
 test('G01c duplicate message IDs must be rejected before update targets the wrong message',async t=>{

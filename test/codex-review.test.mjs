@@ -12,7 +12,7 @@ import os from 'node:os';
 import net from 'node:net';
 import vm from 'node:vm';
 import {fileURLToPath} from 'node:url';
-import {Accounts} from '../src/accounts.mjs';
+import {Owner} from '../src/owner.mjs';
 import {PARSERS,checkAuth,runAdapter,loadConfig} from '../src/adapters/index.mjs';
 import {extractPlan} from '../src/orchestrate.mjs';
 const ROOT=fileURLToPath(new URL('../',import.meta.url));
@@ -44,16 +44,17 @@ test('R03 Codex follow-up must pass resume and previous session to CLI',async()=
 });
 test('R04 concurrent failed logins must not lose failure counts',async t=>{
  const d=await temp();t.after(()=>rm(d,{recursive:true,force:true}));
- const a=new Accounts(d);await a.load();const code=await a.ensureBootstrap();await a.signup({inviteCode:code,username:'tester',password:'synthetic-password'});
- await Promise.all(Array.from({length:16},()=>a.login({username:'tester',password:'incorrect-password',key:'same-ip|tester'})));
- const counter=a.failures.get('same-ip|tester');
- const next=await a.login({username:'tester',password:'synthetic-password',key:'same-ip|tester'});
+ const a=new Owner(d);await a.load();await a.setup({password:'synthetic-password'});
+ await Promise.all(Array.from({length:16},()=>a.login({password:'incorrect-password',key:'same-ip'})));
+ const counter=a.failures.get('same-ip');
+ const next=await a.login({password:'synthetic-password',key:'same-ip'});
  assert.equal(next.error,'too_many_attempts','16 failures counted as '+counter.count+'; next login '+(next.token?'succeeded':next.error));
 });
-test('R05 corrupt accounts must fail closed instead of becoming first-run',async t=>{
- const d=await temp();t.after(()=>rm(d,{recursive:true,force:true}));await writeFile(path.join(d,'accounts.json'),'{corrupted');
- const a=new Accounts(d);let error;try{await a.load();}catch(e){error=e;}
- if(!error){const code=await a.ensureBootstrap();assert.fail('Corrupt account file accepted; fresh bootstrap issued: '+Boolean(code)+'; nextUserId='+a.accounts.data.nextUserId);}
+test('R05 corrupt owner file must fail closed instead of becoming first-run',async t=>{
+ const d=await temp();t.after(()=>rm(d,{recursive:true,force:true}));await writeFile(path.join(d,'owner.json'),'{corrupted');
+ const a=new Owner(d);let error;try{await a.load();}catch(e){error=e;}
+ if(!error)assert.fail('Corrupt owner file accepted; isSet='+a.isSet);
+ assert.equal(error.message,'accounts_corrupt');
 });
 test('R06 invalid worker plan must not become successful direct answer',()=>{
  const r=extractPlan(JSON.stringify({tasks:[{worker:'nonexistent-worker',prompt:'required task'}],answer:null}),['worker']);
@@ -84,23 +85,11 @@ console.log(JSON.stringify({text,session,usage:{input:80,output:20}}));`);
  await poll(()=>log.includes('AI Hub'));
  const base='http://127.0.0.1:'+port;
  const call=async(p,{cookie,body,raw,method='GET',headers={}}={})=>{const res=await fetch(base+p,{method,headers:{origin:base,'content-type':'application/json',...(cookie?{cookie}:{}),...headers},...(body!==undefined?{body:JSON.stringify(body)}:raw!==undefined?{body:raw}:{})});const text=await res.text();let data;try{data=JSON.parse(text);}catch{data=text;}return {status:res.status,headers:res.headers,data};};
- const signup=async(invite,username)=>{const r=await call('/api/signup',{method:'POST',body:{invite,username,password:'synthetic-password'}});assert.equal(r.status,200);return {id:r.data.user.id,cookie:r.headers.get('set-cookie').split(';')[0]};};
- const admin=await signup((await readFile(path.join(d,'data/bootstrap-invite'),'utf8')).trim(),'admin');
- const ac=(p,o={})=>call(p,{...o,cookie:admin.cookie});
- const inv=await ac('/api/admin/invites',{method:'POST',body:{}});const user=await signup(inv.data.code,'user1');
- const uc=(p,o={})=>call(p,{...o,cookie:user.cookie});
+ const r0=await call('/api/setup',{method:'POST',body:{password:'synthetic-password'}});assert.equal(r0.status,200);
+ const admin={id:1,cookie:r0.headers.get('set-cookie').split(';')[0]};const user=admin;
+ const ac=(p,o={})=>call(p,{...o,cookie:admin.cookie});const uc=ac;
  return {d,base,ac,uc,user,admin,call};
 }
-test('R08 disabling account must stop later orchestration phases',async t=>{
- const s=await startHub(t);
- await s.uc('/api/send',{method:'POST',body:{text:'goal',mode:'orchestrate',lead:'lead',workers:['worker']}});
- await poll(async()=>{const st=(await s.uc('/api/state')).data;return st.messages.some(m=>m.kind==='plan'&&m.status==='running');});
- await s.ac('/api/admin/users/disable',{method:'POST',body:{userId:s.user.id,disabled:true}});
- const f=path.join(s.d,'data/users',String(s.user.id),'state.json');
- await delay(1800);const st=JSON.parse(await readFile(f,'utf8'));
- const later=st.messages.filter(m=>m.kind==='task'||m.kind==='final');
- assert.equal(later.length,0,'after disable: '+JSON.stringify(later.map(m=>({kind:m.kind,status:m.status}))));
-});
 test('R09 new conversation while running must not resurrect old session',async t=>{
  const s=await startHub(t);
  await s.uc('/api/send',{method:'POST',body:{text:'first',targets:['lead']}});
@@ -112,7 +101,7 @@ test('R09 new conversation while running must not resurrect old session',async t
  assert.equal(st.adapters[0].session,null,'old session restored: '+(st.adapters[0].session===old));
 });
 test('R10 duplicate targets must not launch unbounded parallel runs past budget',async t=>{
- const s=await startHub(t);await s.ac('/api/admin/users/budget',{method:'POST',body:{userId:s.user.id,monthlyTokens:50}});
+ const s=await startHub(t);await s.ac('/api/settings/budget',{method:'POST',body:{monthlyTokens:50}});
  await s.uc('/api/send',{method:'POST',body:{text:'x',targets:Array(8).fill('lead')}});
  const st=await poll(async()=>{const x=(await s.uc('/api/state')).data;return !x.messages.some(m=>m.status==='running')&&x.messages.length>1&&x;});
  const done=st.messages.filter(m=>m.role==='assistant'&&m.status==='done');

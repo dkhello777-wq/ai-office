@@ -10,7 +10,6 @@ import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {Accounts} from '../src/accounts.mjs';
 import {Store} from '../src/store.mjs';
 import {runAdapter} from '../src/adapters/index.mjs';
 

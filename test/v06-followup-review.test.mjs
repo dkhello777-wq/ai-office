@@ -10,7 +10,7 @@ import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {Accounts} from '../src/accounts.mjs';
+import {Owner} from '../src/owner.mjs';
 import {Store} from '../src/store.mjs';
 import {runAdapter} from '../src/adapters/index.mjs';
 
@@ -20,15 +20,14 @@ const temp=()=>mkdtemp(path.join(os.tmpdir(),'hub-v06-review-'));
 const exists=async p=>{try{await access(p);return true;}catch{return false;}};
 async function poll(fn,ms=6000){const end=Date.now()+ms;while(Date.now()<end){const v=await fn();if(v)return v;await delay(25);}throw Error('fixture condition timeout');}
 
-test('F01a structurally corrupt accounts must not recreate administrator bootstrap',async t=>{
+test('F01a structurally corrupt owner file must fail closed, not become first-run',async t=>{
   const d=await temp();t.after(()=>rm(d,{recursive:true,force:true}));
-  await writeFile(path.join(d,'accounts.json'),'{}');
-  const a=new Accounts(d);let error;
+  await writeFile(path.join(d,'owner.json'),'{"salt":123}');
+  const a=new Owner(d);let error;
   try{await a.load();}catch(e){error=e;}
   if(error){assert.equal(error.message,'accounts_corrupt');return;}
-  const bootstrap=await a.ensureBootstrap();
-  t.diagnostic('Existing accounts.json={} accepted; bootstrap issued='+Boolean(bootstrap)+'; nextUserId='+a.accounts.data.nextUserId);
-  assert.fail('Existing account file with missing required schema must fail closed');
+  t.diagnostic('Existing owner.json with wrong schema accepted; isSet='+a.isSet);
+  assert.fail('Existing owner file with wrong schema must fail closed');
 });
 
 test('F01b state with missing nextId must fail closed before creating null IDs',async t=>{
@@ -100,61 +99,25 @@ console.log(JSON.stringify({text:'OK',session:'fixture-session',usage:{input:1,o
     const res=await fetch(base+p,{method,headers:{origin:base,'content-type':'application/json',...(cookie?{cookie}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{})});
     return {status:res.status,headers:res.headers,data:await res.json()};
   };
-  const signup=async(invite,username)=>{
-    const r=await call('/api/signup',{method:'POST',body:{invite,username,password:'synthetic-password'}});
-    assert.equal(r.status,200);return {id:r.data.user.id,cookie:r.headers.get('set-cookie').split(';')[0]};
-  };
-  const admin=await signup((await readFile(path.join(d,'data/bootstrap-invite'),'utf8')).trim(),'admin');
-  const ac=(p,o={})=>call(p,{...o,cookie:admin.cookie});
-  const inv=await ac('/api/admin/invites',{method:'POST',body:{}});const user=await signup(inv.data.code,'user1');
+  const r0=await call('/api/setup',{method:'POST',body:{password:'synthetic-password'}});assert.equal(r0.status,200);
+  const user={id:1,cookie:r0.headers.get('set-cookie').split(';')[0]};
   const uc=(p,o={})=>call(p,{...o,cookie:user.cookie});
   const userDir=path.join(d,'data/users',String(user.id));
   const home=path.join(userDir,'home');
   const diskState=async()=>JSON.parse(await readFile(path.join(userDir,'state.json'),'utf8'));
-  const disable=async value=>{
-    const r=await ac('/api/admin/users/disable',{method:'POST',body:{userId:user.id,disabled:value}});
-    assert.equal(r.status,200);assert.equal(r.data.ok,true);
-  };
-  return {uc,home,diskState,disable};
+  return {uc,home,diskState};
 }
-
-test('F03 account disabled during auth check must not start a model afterward',async t=>{
-  const s=await startHub(t,{slowAuth:true});
-  const sent=await s.uc('/api/send',{method:'POST',body:{text:'fixture',targets:['lead']}});assert.equal(sent.status,200);
-  await poll(()=>exists(path.join(s.home,'auth-started')));
-  await s.disable(true);
-  await writeFile(path.join(s.home,'auth-release'),'release after disable response');
-  const state=await poll(async()=>{const x=await s.diskState();return x.messages.some(m=>m.role==='assistant'&&m.status!=='running')&&x;});
-  const launched=await exists(path.join(s.home,'model-started'));
-  t.diagnostic('After disable completed: model launched='+launched+'; assistant='+JSON.stringify(state.messages.filter(m=>m.role==='assistant').map(m=>({status:m.status,error:m.error}))));
-  assert.equal(launched,false,'Disabled user started new model after auth completion');
-});
-
-test('F04 disabling account must settle queued runs instead of dropping their promises',async t=>{
-  const s=await startHub(t,{modelDelay:8000,concurrent:1});
-  await s.uc('/api/send',{method:'POST',body:{text:'first',targets:['lead']}});
-  await poll(()=>exists(path.join(s.home,'model-started')));
-  await s.uc('/api/send',{method:'POST',body:{text:'queued',targets:['lead']}});
-  await poll(async()=>((await s.uc('/api/state')).data.messages.filter(m=>m.status==='running').length===2));
-  await s.disable(true);
-  await poll(async()=>(await s.diskState()).messages.some(m=>m.status==='cancelled'));
-  await s.disable(false);
-  await delay(1000);
-  const messages=(await s.diskState()).messages.filter(m=>m.role==='assistant');
-  t.diagnostic('After cancel and re-enable: '+JSON.stringify(messages.map(m=>({id:m.id,status:m.status,error:m.error}))));
-  assert.equal(messages.filter(m=>m.status==='running').length,0,'Queued promise never resolves; message remains running');
-});
 
 test('F05 handled login storage error must not create an unhandled rejection',async t=>{
   const d=await temp();t.after(()=>rm(d,{recursive:true,force:true}));
   const script=path.join(d,'login-rejection.mjs');
-  const source=pathToFileURL(path.join(ROOT,'src/accounts.mjs')).href;
-  await writeFile(script,`import {Accounts} from ${JSON.stringify(source)};
+  const source=pathToFileURL(path.join(ROOT,'src/owner.mjs')).href;
+  await writeFile(script,`import {Owner} from ${JSON.stringify(source)};
 import {mkdir} from 'node:fs/promises';
-const a=new Accounts(${JSON.stringify(d)});await a.load();
-const inviteCode=await a.ensureBootstrap();await a.signup({inviteCode,username:'tester',password:'synthetic-password'});
+const a=new Owner(${JSON.stringify(d)});await a.load();
+await a.setup({password:'synthetic-password'});
 await mkdir(${JSON.stringify(path.join(d,'sessions.json.tmp'))});
-try{await a.login({username:'tester',password:'synthetic-password',key:'fixture'});}catch(e){console.log('CALLER_CAUGHT:'+e.code);}
+try{await a.login({password:'synthetic-password',key:'fixture'});}catch(e){console.log('CALLER_CAUGHT:'+e.code);}
 await new Promise(r=>setTimeout(r,100));console.log('STILL_ALIVE');`);
   const child=spawn(process.execPath,[script],{env:{PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
   let stdout='',stderr='';child.stdout.on('data',b=>stdout+=b);child.stderr.on('data',b=>stderr+=b);

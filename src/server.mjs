@@ -1,5 +1,5 @@
-// AI Hub 서버 (v0.5, 다인 사용): 브라우저(PC/폰) ⇄ 이 서버 ⇄ 각 AI CLI.
-// 사용자마다 허브 계정이 있고, 각 사용자는 자기 폴더(data/users/<id>/) 안에서만 작업한다:
+// AI Office 서버 (v0.7, 1인용): 브라우저(PC/폰) ⇄ 이 서버 ⇄ 각 AI CLI.
+// 서버 주인 한 명(비밀번호 하나)이 쓴다. 작업 폴더는 data/users/1/ 하나:
 //   home/       → CLI 의 HOME·설정 폴더(로그인 정보가 여기 저장됨: 사용자별 구독 분리)
 //   workspace/  → 공유 파일(shared/) 과 CLI 의 작업 폴더, memory.md(사용자 메모리)
 //   state.json  → 대화 기록·세션·월별 사용량 / runs/ → 실행 증거(0700/0600)
@@ -11,7 +11,7 @@ import {execFile} from 'node:child_process';
 import path from 'node:path';
 import {loadConfig,runAdapter,checkAuth,startLogin} from './adapters/index.mjs';
 import {Store,sha256} from './store.mjs';
-import {Accounts} from './accounts.mjs';
+import {Owner,OWNER_ID,PASSWORD_MIN} from './owner.mjs';
 import {extractPlan} from './orchestrate.mjs';
 
 const root=new URL('../',import.meta.url);
@@ -30,20 +30,24 @@ const LIMITS={uploadBytes:Number(config.limits?.uploadBytes??50*1024*1024),textC
 // 브라우저가 실행할 수 있는 파일 형식은 /files/ 에서 다운로드로만 (GPT R11: 허브 출처에서 스크립트가 돌면 세션 쿠키로 API 호출 가능)
 const DOWNLOAD_ONLY=new Set(['.html','.htm','.xhtml','.svg','.xml','.js','.mjs','.css','.webmanifest']);
 
-// ---- 계정: 초대 코드로만 가입. 사용자가 한 명도 없으면 최초 관리자용 초대 코드를 콘솔과 data/bootstrap-invite(0600) 에 남긴다. ----
-const accounts=new Accounts(dataDir);
-try{await accounts.load();}
+// ---- 계정: 주인 한 명. 비밀번호가 아직 없으면 화면의 "비밀번호 설정" 또는 환경변수 HUB_PASSWORD 로 정한다. ----
+const owner=new Owner(dataDir);
+try{await owner.load();}
 catch(e){console.error(`계정 파일을 읽을 수 없어 시작하지 않습니다 (${e.message}): ${e.file}\n  → 파일이 손상됐으면 백업에서 복구하거나, 정말 처음부터 시작하려면 data/ 폴더를 옮긴 뒤 다시 실행하세요. 빈 상태로 덮어쓰지 않습니다.`);process.exit(2);}
-const bootstrapCode=await accounts.ensureBootstrap();
+if(!owner.isSet&&process.env.HUB_PASSWORD){const r=await owner.setup({password:process.env.HUB_PASSWORD});if(r.error)console.error(`HUB_PASSWORD 로 비밀번호를 설정하지 못함: ${r.error} (${PASSWORD_MIN}자 이상)`);else console.log('HUB_PASSWORD 로 주인 비밀번호를 설정했습니다.');}
+// 호환용 별칭: 아래 코드는 accounts.userById / publicUser 만 쓴다
+const accounts={userById:id=>owner.userById(id),publicUser:u=>owner.publicUser(u)};
 
 const cookies=req=>Object.fromEntries((req.headers.cookie??'').split(';').map(s=>s.trim().split('=')).filter(([k])=>k));
-const currentUser=req=>accounts.userForToken(cookies(req).hub);
+const currentUser=req=>owner.userForToken(cookies(req).hub);
 const isSecure=req=>req.headers['x-forwarded-proto']==='https';
 const allowedHosts=new Set([...(config.allowedHosts??[]),...(process.env.HUB_ALLOWED_HOSTS?process.env.HUB_ALLOWED_HOSTS.split(','):[])].map(s=>s.trim()).filter(Boolean));
 // 변경 요청(POST)은 Host 허용 목록 + Origin 일치 + JSON 형식까지 확인한 뒤에만 처리한다.
+// 클라우드 배포(HUB_ALLOWED_HOSTS=*)에서는 Host 목록 검사를 끄고 Origin 일치(CSRF 방어)만 본다 — 도메인이 플랫폼이 정해 주는 값이라 미리 알 수 없기 때문.
+const ANY_HOST=allowedHosts.has('*');
 function mutationGate(req,expectJson=true){
   const host=req.headers.host??'';
-  if(allowedHosts.size&&!allowedHosts.has(host))return {error:'host_not_allowed',status:403};
+  if(!ANY_HOST&&allowedHosts.size&&!allowedHosts.has(host))return {error:'host_not_allowed',status:403};
   const origin=req.headers.origin;
   const scheme=isSecure(req)?'https':'http';
   if(!origin||origin!==`${scheme}://${host}`)return {error:'origin_not_allowed',status:403};
@@ -100,7 +104,7 @@ function closeUserStreams(userId,tokenHash=null){
     for(const w of tctx.queue.splice(0))w.reject(Object.assign(new Error('cancelled'),{cancelled:true}));   // 대기 중이던 요청은 취소로 끝낸다 (GPT F04)
   }
 }
-const isDisabled=ctx=>!!(accounts.userById(ctx.user.id)?.disabled);
+const isDisabled=ctx=>false;   // 1인용: 계정 중지 개념 없음 (서버 종료가 곧 중지)
 // 사용자별 동시 실행 상한 (GPT R10). 상한을 넘는 호출은 순서대로 기다린다.
 function acquireSlot(ctx){
   if(ctx.active<LIMITS.concurrentPerUser){ctx.active++;return Promise.resolve();}
@@ -129,7 +133,7 @@ const memoryPublic=text=>({chars:text.length,overLimit:text.length>MEMORY_MAX,ma
 
 // ---- v0.5 토큰 예산: 사용자별 월 상한(관리자 설정, 없으면 config 기본값). 0 = 무제한 ----
 function budgetFor(ctx){
-  const limit=Number(ctx.user.budget?.monthlyTokens??BUDGET_DEFAULT)||0;
+  const limit=Number(owner.user.budget?.monthlyTokens??BUDGET_DEFAULT)||0;
   const u=ctx.store.usageFor();
   return {month:u.month,tokens:u.tokens,calls:u.total.calls,byAdapter:u.byAdapter,limit,exceeded:limit>0&&u.tokens>=limit};
 }
@@ -137,7 +141,7 @@ function budgetFor(ctx){
 const loginPublic=l=>l?{status:l.status,urls:l.urls??[],codes:l.codes??[],lastLine:l.lastLine??'',error:l.error??null,startedAt:l.startedAt,endedAt:l.endedAt??null}:null;
 async function statePayload(ctx){
   const memory=await readMemory(ctx);
-  return {user:accounts.publicUser(ctx.user),adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream})),messages:ctx.store.state.messages,workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
+  return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream})),messages:ctx.store.state.messages,workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
 }
 // 프롬프트 합성: (메모리) + (다른 AI 답변 전문) + 본문 + 첨부 안내. 원문을 요약하거나 자르지 않는다.
 function composePrompt({text,files=[],handoff=null,memory=''}){
@@ -287,7 +291,6 @@ function beginLogin(ctx,adapter){
   return {ok:true,login:loginPublic(state)};
 }
 
-const requireAdmin=user=>user.role==='admin';
 const server=http.createServer(async(req,res)=>{
   try{
     const url=new URL(req.url,'http://x');
@@ -298,27 +301,26 @@ const server=http.createServer(async(req,res)=>{
       return json(res,{error:'not_found'},404);
     }
     const user=currentUser(req);
-    // ---- 계정 API (로그인 전) ----
+    // ---- 계정 API (로그인 전): 최초 비밀번호 설정 / 로그인 / 로그아웃 ----
     if(req.method==='GET'&&url.pathname==='/api/me'){
-      return json(res,user?{user:accounts.publicUser(user)}:{user:null,signup:config.signup?.mode??'invite',firstRun:!accounts.hasUsers()},user?200:401);
+      return json(res,user?{user:accounts.publicUser(user)}:{user:null,setupRequired:!owner.isSet},user?200:401);
     }
-    if(req.method==='POST'&&['/api/signup','/api/login','/api/logout'].includes(url.pathname)){
+    if(req.method==='POST'&&['/api/setup','/api/login','/api/logout'].includes(url.pathname)){
       const gate=mutationGate(req);if(gate)return json(res,{error:gate.error},gate.status);
       const a=await bodyJson(req);if(!a)return json(res,{error:'invalid_json'},400);
-      if(url.pathname==='/api/signup'){
-        const r=await accounts.signup({inviteCode:a.invite,username:a.username,password:a.password});
-        if(r.error)return json(res,{error:r.error},400);
-        await accounts.ensureBootstrap();   // 사용자가 생겼으면(역할 무관) bootstrap 초대 폐기 및 파일 제거 (검수 FAIL 6)
-        const l=await accounts.login({username:a.username,password:a.password,key:'signup:'+r.user.id});
+      if(url.pathname==='/api/setup'){
+        if(owner.isSet)return json(res,{error:'already_set'},409);
+        const r=await owner.setup({password:a.password});
+        if(r.error)return json(res,{error:r.error},r.error==='already_set'?409:400);
+        const l=await owner.login({password:a.password,key:'setup'});
         setSessionCookie(req,res,l.token);return json(res,{ok:true,user:l.user});
       }
       if(url.pathname==='/api/login'){
-        // 잠금 키의 아이디 정규화를 Accounts.login 과 똑같이(trim+lower) — 공백 변형으로 잠금 우회 불가 (검수 FAIL 2)
-        const r=await accounts.login({username:a.username,password:a.password,key:`${req.socket.remoteAddress}|${String(a.username??'').trim().toLowerCase()}`});
+        const r=await owner.login({password:a.password,key:String(req.socket.remoteAddress)});
         if(r.error)return json(res,{error:r.error},r.error==='too_many_attempts'?429:401);
         setSessionCookie(req,res,r.token);return json(res,{ok:true,user:r.user});
       }
-      if(url.pathname==='/api/logout'){const tok=cookies(req).hub;if(user&&tok)closeUserStreams(user.id,sha256(tok));await accounts.logout(tok);clearSessionCookie(req,res);return json(res,{ok:true});}
+      if(url.pathname==='/api/logout'){const tok=cookies(req).hub;if(user&&tok)closeUserStreams(user.id,sha256(tok));await owner.logout(tok);clearSessionCookie(req,res);return json(res,{ok:true});}
     }
     if(!user)return json(res,{error:'login_required'},401);
     const ctx=await userContext(user);
@@ -339,29 +341,24 @@ const server=http.createServer(async(req,res)=>{
       res.writeHead(200,headers);
       const stream=createReadStream(p);stream.on('error',()=>res.destroy());return stream.pipe(res);
     }
-    // ---- 관리자 ----
-    if(url.pathname.startsWith('/api/admin/')){
-      if(!requireAdmin(user))return json(res,{error:'admin_required'},403);
-      if(req.method==='GET'&&url.pathname==='/api/admin/users')return json(res,{users:accounts.users.map(u=>accounts.publicUser(u)),budgetDefault:BUDGET_DEFAULT});
-      if(req.method==='GET'&&url.pathname==='/api/admin/invites')return json(res,{invites:accounts.listInvites()});
-      if(req.method==='POST'){
-        const gate=mutationGate(req);if(gate)return json(res,{error:gate.error},gate.status);
-        const a=await bodyJson(req);if(!a)return json(res,{error:'invalid_json'},400);
-        if(url.pathname==='/api/admin/invites'){const r=await accounts.createInvite({createdBy:user.username,role:a.role==='admin'?'admin':'user'});return json(res,{ok:true,code:r.code,invite:r.invite});}
-        if(url.pathname==='/api/admin/invites/revoke')return json(res,{ok:await accounts.revokeInvite(String(a.id))});
-        if(url.pathname==='/api/admin/users/disable'){
-          const targetId=Number(a.userId);if(targetId===user.id)return json(res,{error:'cannot_disable_self'},400);
-          const ok=await accounts.setDisabled(targetId,!!a.disabled);
-          if(ok&&a.disabled)closeUserStreams(targetId);   // 중지 즉시 열린 SSE·로그인 프로세스도 끊는다 (검수 FAIL 7)
-          return json(res,{ok});
-        }
-        if(url.pathname==='/api/admin/users/budget'){
-          const targetId=Number(a.userId);const n=a.monthlyTokens===null||a.monthlyTokens===undefined?null:Number(a.monthlyTokens);
-          if(n!==null&&(!Number.isFinite(n)||n<0))return json(res,{error:'budget_invalid'},400);
-          const ok=await accounts.setBudget(targetId,n===null?null:{monthlyTokens:Math.floor(n)});
-          const tctx=contexts.get(targetId);if(tctx){tctx.user=accounts.userById(targetId);emit(tctx,'budget',budgetFor(tctx));}
-          return json(res,{ok});
-        }
+    // ---- 설정 (1인용): 월 토큰 상한 · 팀장 AI · 비밀번호 변경 ----
+    if(req.method==='POST'&&url.pathname.startsWith('/api/settings/')){
+      const gate=mutationGate(req);if(gate)return json(res,{error:gate.error},gate.status);
+      const a=await bodyJson(req);if(!a)return json(res,{error:'invalid_json'},400);
+      if(url.pathname==='/api/settings/budget'){
+        const n=a.monthlyTokens===null||a.monthlyTokens===undefined||a.monthlyTokens===''?null:Number(a.monthlyTokens);
+        if(n!==null&&(!Number.isFinite(n)||n<0))return json(res,{error:'budget_invalid'},400);
+        await owner.setBudget(n===null?null:{monthlyTokens:Math.floor(n)});ctx.user=owner.user;emit(ctx,'budget',budgetFor(ctx));return json(res,{ok:true,budget:budgetFor(ctx)});
+      }
+      if(url.pathname==='/api/settings/lead'){
+        const id=a.adapterId===null||a.adapterId===undefined||a.adapterId===''?null:String(a.adapterId);
+        if(id!==null&&!adapters.some(x=>x.id===id))return json(res,{error:'adapter_not_found'},404);
+        await owner.setLead(id);ctx.user=owner.user;emit(ctx,'state',await statePayload(ctx));return json(res,{ok:true,lead:id});
+      }
+      if(url.pathname==='/api/settings/password'){
+        const r=await owner.changePassword({current:a.current,next:a.next});
+        if(r.error)return json(res,{error:r.error},r.error==='login_invalid'?401:400);
+        clearSessionCookie(req,res);return json(res,{ok:true,relogin:true});
       }
       return json(res,{error:'not_found'},404);
     }
@@ -431,8 +428,8 @@ const server=http.createServer(async(req,res)=>{
 const port=Number(process.env.PORT??config.port),host=process.env.HOST??config.host;
 if(!allowedHosts.size)for(const h of [`127.0.0.1:${port}`,`localhost:${port}`])allowedHosts.add(h);
 server.listen(port,host,()=>{
-  console.log(`AI Hub → http://${host}:${port}  (사용자 폴더: ${usersDir}, AI: ${adapters.map(a=>a.id).join(', ')||'없음'})`);
-  console.log(`허용 Host: ${[...allowedHosts].join(', ')}  ·  월 토큰 기본 상한: ${BUDGET_DEFAULT||'무제한'}`);
-  if(bootstrapCode)console.log(`최초 관리자 가입용 초대 코드(24시간, 1회): ${bootstrapCode}   (data/bootstrap-invite 에도 저장됨 — 화면의 "가입" 에 입력)`);
-  else console.log(`계정 ${accounts.users.length}명. 새 사용자는 관리자가 화면에서 초대 코드를 발급해 전달.`);
+  console.log(`AI Hub → http://${host}:${port}  (데이터 폴더: ${usersDir}, AI: ${adapters.map(a=>a.id).join(', ')||'없음'})`);
+  console.log(`허용 Host: ${ANY_HOST?'모두 (Origin 일치만 검사)':[...allowedHosts].join(', ')}  ·  월 토큰 기본 상한: ${BUDGET_DEFAULT||'무제한'}`);
+  if(!owner.isSet)console.log('아직 비밀번호가 없습니다. 화면을 열어 "비밀번호 설정" 을 먼저 하세요 (또는 환경변수 HUB_PASSWORD).');
+  else console.log('주인 비밀번호 설정됨. 화면에서 로그인하세요.');
 });

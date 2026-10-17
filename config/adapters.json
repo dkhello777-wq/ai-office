@@ -1,5 +1,5 @@
 {
-  "_설명": "각 AI를 호출하는 CLI 명령. 프롬프트는 stdin 으로 통째로 넘깁니다(긴 원문 OK). authCheck 는 비밀값 없는 공식 '로그인 상태' 명령과 구조화 파서(parser)입니다. 파서가 subscription 으로 판정할 때만 실제 호출이 진행되고, api_key / third_party / not_logged_in / unverified 는 모두 호출 전에 중단합니다. authCheck 가 없는 어댑터는 항상 중단됩니다. envAllow 는 자식 CLI 에 추가로 넘길 비민감 환경변수 이름. 값들은 설치된 CLI 버전에서 검증 필요 — 틀리면 상태 화면의 authCheck.output 을 보고 패턴을 고치세요. v0.4: 여러 사용자가 각자 계정으로 쓴다. 각 사용자는 data/users/<id>/home 을 HOME 으로 받고(perUserEnv 로 CLI 설정 폴더를 그 아래에 둠), login 은 화면의 'CLI 로그인' 버튼이 실행하는 공식 로그인 명령이다(URL·코드만 화면에 표시, 입력은 stdin 으로 전달). v0.5: roleHint(오케스트레이터가 작업을 나눌 때 참고하는 한 줄 역할 설명), stream(부분 출력 파서: 'jsonl' — 한 줄에 이벤트 하나인 출력에서 지금까지의 본문을 뽑아 화면에 먼저 보여줌. 최종 답변은 종료 후 parse 로 확정). budget.monthlyTokens(사용자 월 토큰 상한 기본값, 0=무제한; 관리자가 사용자별로 덮어씀). memory.maxChars(프롬프트에 주입하는 memory.md 상한). orchestrate.maxTasks(팀장이 나눌 수 있는 최대 작업 수).",
+  "_설명": "각 AI를 호출하는 CLI 명령. 프롬프트는 stdin 으로 통째로 넘깁니다(긴 원문 OK). authCheck 는 비밀값 없는 공식 '로그인 상태' 명령과 구조화 파서(parser)입니다. 파서가 subscription 으로 판정할 때만 실제 호출이 진행되고, api_key / third_party / not_logged_in / unverified 는 모두 호출 전에 중단합니다. authCheck 가 없는 어댑터는 항상 중단됩니다. envAllow 는 자식 CLI 에 추가로 넘길 비민감 환경변수 이름. 값들은 설치된 CLI 버전에서 검증 필요 — 틀리면 상태 화면의 authCheck.output 을 보고 패턴을 고치세요. v0.7: 주인 한 명이 쓴다. CLI 는 data/users/1/home 을 HOME 으로 받고(perUserEnv 로 CLI 설정 폴더를 그 아래에 둠), login 은 화면의 'CLI 로그인' 버튼이 실행하는 공식 로그인 명령이다(URL·코드만 화면에 표시, 입력은 stdin 으로 전달). v0.5: roleHint(오케스트레이터가 작업을 나눌 때 참고하는 한 줄 역할 설명), stream(부분 출력 파서: 'jsonl' — 한 줄에 이벤트 하나인 출력에서 지금까지의 본문을 뽑아 화면에 먼저 보여줌. 최종 답변은 종료 후 parse 로 확정). budget.monthlyTokens(월 토큰 상한 기본값, 0=무제한; 화면 설정에서 덮어씀). memory.maxChars(프롬프트에 주입하는 memory.md 상한). orchestrate.maxTasks(팀장이 나눌 수 있는 최대 작업 수).",
   "adapters": [
     {
       "id": "claude",
@@ -172,16 +172,12 @@
   "_인증캐시": "authCacheMs=0: 호출 직전마다 상태 명령을 다시 실행해 판정(캐시 없음). 인증 방식이 바뀌면 다음 호출부터 즉시 반영.",
   "users": {
     "dir": "data/users",
-    "_설명": "사용자별 폴더: home/(CLI 설정·인증 저장), workspace/shared/(파일), state.json(대화), runs/(증거). 전부 0700."
-  },
-  "signup": {
-    "mode": "invite",
-    "_설명": "invite: 관리자가 발급한 초대 코드로만 가입. 최초 관리자는 서버가 콘솔과 data/bootstrap-invite(0600) 에 남기는 코드로 가입."
+    "_설명": "1인용: data/users/1/ 하나만 쓴다 — home/(CLI 설정·로그인), workspace/shared/(파일), memory.md, state.json(대화), runs/(증거). 전부 0700."
   },
   "loginTimeoutMs": 600000,
   "budget": {
     "monthlyTokens": 0,
-    "_설명": "사용자 월 토큰 상한 기본값(입력+출력 합). 0 = 무제한. 관리자 화면에서 사용자별로 바꿀 수 있다. 사용량은 각 CLI 의 usage 출력에서 정규화해 집계하며, usage 를 안 주는 CLI 는 0 으로 잡히니 그 경우 상한은 보조 수단일 뿐이다."
+    "_설명": "월 토큰 상한 기본값(입력+출력 합). 0 = 무제한. 화면 설정에서 바꿀 수 있다. 사용량은 각 CLI 의 usage 출력에서 정규화해 집계하며, usage 를 안 주는 CLI 는 0 으로 잡히니 그 경우 상한은 보조 수단일 뿐이다."
   },
   "memory": {
     "maxChars": 20000,
@@ -195,6 +191,7 @@
     "uploadBytes": 52428800,
     "textChars": 200000,
     "concurrentPerUser": 4,
-    "_설명": "업로드 1건 최대 바이트, 메시지·메모리 최대 글자, 사용자별 동시 CLI 실행 수(넘으면 순서대로 대기). GPT R10·자원 한도."
-  }
+    "_설명": "업로드 1건 최대 바이트, 메시지·메모리 최대 글자, 동시 CLI 실행 수(넘으면 순서대로 대기)."
+  },
+  "_호스트": "allowedHosts: 변경 요청(POST)을 받는 Host 목록. 클라우드 배포처럼 도메인을 미리 모를 때는 환경변수 HUB_ALLOWED_HOSTS=* 로 목록 검사를 끈다(Origin 일치 검사는 그대로). HOST=0.0.0.0 과 PORT 도 환경변수로."
 }
