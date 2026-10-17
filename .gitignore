@@ -1,0 +1,4 @@
+!workspace/shared/.gitkeep
+data/
+node_modules/
+workspace/shared/*

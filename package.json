@@ -1,0 +1,15 @@
+{
+  "name": "ai-hub",
+  "version": "0.6.2",
+  "private": true,
+  "type": "module",
+  "description": "구독 중인 AI CLI들을 한 화면에서 쓰는 다인용 허브 — 사용자별 계정·폴더·AI 로그인 분리 + 메모리·토큰 예산·오케스트레이터·부분 출력 (Mac/서버에서 실행, 브라우저/폰에서 접속)",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "doctor": "node src/doctor.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}

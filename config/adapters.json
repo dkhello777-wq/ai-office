@@ -1,0 +1,200 @@
+{
+  "_설명": "각 AI를 호출하는 CLI 명령. 프롬프트는 stdin 으로 통째로 넘깁니다(긴 원문 OK). authCheck 는 비밀값 없는 공식 '로그인 상태' 명령과 구조화 파서(parser)입니다. 파서가 subscription 으로 판정할 때만 실제 호출이 진행되고, api_key / third_party / not_logged_in / unverified 는 모두 호출 전에 중단합니다. authCheck 가 없는 어댑터는 항상 중단됩니다. envAllow 는 자식 CLI 에 추가로 넘길 비민감 환경변수 이름. 값들은 설치된 CLI 버전에서 검증 필요 — 틀리면 상태 화면의 authCheck.output 을 보고 패턴을 고치세요. v0.4: 여러 사용자가 각자 계정으로 쓴다. 각 사용자는 data/users/<id>/home 을 HOME 으로 받고(perUserEnv 로 CLI 설정 폴더를 그 아래에 둠), login 은 화면의 'CLI 로그인' 버튼이 실행하는 공식 로그인 명령이다(URL·코드만 화면에 표시, 입력은 stdin 으로 전달). v0.5: roleHint(오케스트레이터가 작업을 나눌 때 참고하는 한 줄 역할 설명), stream(부분 출력 파서: 'jsonl' — 한 줄에 이벤트 하나인 출력에서 지금까지의 본문을 뽑아 화면에 먼저 보여줌. 최종 답변은 종료 후 parse 로 확정). budget.monthlyTokens(사용자 월 토큰 상한 기본값, 0=무제한; 관리자가 사용자별로 덮어씀). memory.maxChars(프롬프트에 주입하는 memory.md 상한). orchestrate.maxTasks(팀장이 나눌 수 있는 최대 작업 수).",
+  "adapters": [
+    {
+      "id": "claude",
+      "label": "Claude",
+      "color": "#d97757",
+      "command": "claude",
+      "args": [
+        "-p",
+        "--output-format",
+        "json"
+      ],
+      "resumeArgs": [
+        "--resume",
+        "{session}"
+      ],
+      "parse": "claude-json",
+      "versionArgs": [
+        "--version"
+      ],
+      "enabled": true,
+      "promptVia": "stdin",
+      "authCheck": {
+        "args": [
+          "auth",
+          "status"
+        ],
+        "parser": "claude-json",
+        "_근거": "https://code.claude.com/docs/en/cli-reference — auth status 는 JSON(loggedIn, authMethod, apiProvider, subscriptionType). 허용: claude.ai + firstParty + subscriptionType 문자열"
+      },
+      "envAllow": [
+        "CLAUDE_CONFIG_DIR"
+      ],
+      "login": {
+        "args": [
+          "auth",
+          "login"
+        ],
+        "_근거": "https://code.claude.com/docs/en/cli-reference — `claude auth login` (브라우저 없는 환경에서는 URL 출력 + 코드 입력). 설치본에서 출력 형식 확인 필요",
+        "_검증": "미검증 — 맥에서 1회 확인"
+      },
+      "perUserEnv": {
+        "CLAUDE_CONFIG_DIR": "{home}/.claude"
+      },
+      "roleHint": "리서치·추론·분석·긴 문서 종합",
+      "_스트리밍": "현재 args 는 --output-format json(종료 후 한 번에 출력)이라 부분 출력 없음. 설치본에서 확인 후 쓰려면 args 를 [\"-p\",\"--output-format\",\"stream-json\",\"--verbose\"] 로 바꾸고 stream 을 \"jsonl\" 로 — claude-json 파서는 stream-json 의 마지막 result 이벤트도 읽는다. 미검증."
+    },
+    {
+      "id": "codex",
+      "label": "ChatGPT (Codex)",
+      "color": "#10a37f",
+      "command": "codex",
+      "args": [
+        "exec",
+        "--json",
+        "-"
+      ],
+      "resumeArgs": [
+        "exec",
+        "resume",
+        "{session}",
+        "--json",
+        "-"
+      ],
+      "parse": "codex-jsonl",
+      "versionArgs": [
+        "--version"
+      ],
+      "enabled": true,
+      "promptVia": "stdin",
+      "authCheck": {
+        "args": [
+          "login",
+          "status"
+        ],
+        "parser": "codex-text",
+        "_검증": "codex 0.1x `codex login status` 출력 행 형식('Logged in using ChatGPT' 등) 설치본에서 확인 필요",
+        "output": "both",
+        "_출력": "GPT 검수가 Codex 0.158 로 확인: `login status` 의 'Logged in using ChatGPT' 는 stderr 로 나온다(stdout 빈 문자열). output=both 로 stdout+stderr 를 행 단위로 본다."
+      },
+      "envAllow": [
+        "CODEX_HOME"
+      ],
+      "login": {
+        "args": [
+          "login",
+          "--device-auth"
+        ],
+        "_근거": "codex login --device-auth: URL 과 일회용 코드 출력 후 대기 (ChatGPT 설정 → Security 에서 device code 로그인 허용 필요)",
+        "_검증": "미검증 — 맥에서 1회 확인"
+      },
+      "perUserEnv": {
+        "CODEX_HOME": "{home}/.codex"
+      },
+      "roleHint": "코딩·개발·디버깅·코드 리뷰",
+      "stream": "jsonl",
+      "_스트리밍": "codex exec --json 은 이미 JSONL 이라 그대로 부분 출력 가능. 이벤트 필드명은 설치본에서 확인.",
+      "resumeMode": "replace",
+      "_재개": "세션 재개는 `codex exec resume <SESSION_ID> [PROMPT]` 서브커맨드(resumeMode=replace). Codex 0.158 도움말로 SESSION_ID 위치 인자와 PROMPT `-`(stdin) 확인됨(GPT 재검증 logs/native-codex-resume-help.txt). 실제 2턴 대화 지속은 맥에서 1회 확인.",
+      "_git": "codex exec 는 작업 폴더가 git 저장소이길 요구한다(공식 문서). 허브가 사용자 workspace 에 `git init` 을 한 번 실행한다(git 없으면 건너뛰고 경고). 안 되면 args 에 `--skip-git-repo-check` 추가를 설치본에서 확인."
+    },
+    {
+      "id": "gemini",
+      "label": "Gemini",
+      "color": "#4285f4",
+      "command": "gemini",
+      "args": [
+        "--output-format",
+        "json"
+      ],
+      "resumeArgs": [],
+      "parse": "gemini-json",
+      "versionArgs": [
+        "--version"
+      ],
+      "enabled": true,
+      "promptVia": "stdin",
+      "authCheck": null,
+      "envAllow": [],
+      "_인증확인": "Gemini CLI 는 비밀값 없는 로그인 상태 명령을 확인하지 못해 authCheck 를 비워 둠 → 확인 전까지 호출 중단. 공식 명령을 확인하면 채우세요. 로그인 명령도 비대화형(URL 출력) 방식이 확인되지 않아 비워 둠.",
+      "login": null,
+      "perUserEnv": {},
+      "roleHint": "멀티모달·검색·리서치"
+    },
+    {
+      "id": "mock",
+      "label": "Mock (테스트)",
+      "color": "#888888",
+      "command": "node",
+      "args": [
+        "{root}/src/adapters/mock-cli.mjs"
+      ],
+      "resumeArgs": [
+        "--session",
+        "{session}"
+      ],
+      "parse": "mock-json",
+      "versionArgs": [
+        "--version"
+      ],
+      "enabled": false,
+      "promptVia": "stdin",
+      "authCheck": {
+        "args": [
+          "{root}/src/adapters/mock-cli.mjs",
+          "--auth-status"
+        ],
+        "parser": "mock-json"
+      },
+      "envAllow": [],
+      "login": {
+        "args": [
+          "{root}/src/adapters/mock-cli.mjs",
+          "--login"
+        ]
+      },
+      "perUserEnv": {},
+      "stream": "mock-stream",
+      "roleHint": "테스트용"
+    }
+  ],
+  "timeoutMs": 900000,
+  "workspace": "workspace",
+  "port": 8787,
+  "host": "127.0.0.1",
+  "allowedHosts": [
+    "127.0.0.1:8787",
+    "localhost:8787"
+  ],
+  "authCacheMs": 0,
+  "_인증캐시": "authCacheMs=0: 호출 직전마다 상태 명령을 다시 실행해 판정(캐시 없음). 인증 방식이 바뀌면 다음 호출부터 즉시 반영.",
+  "users": {
+    "dir": "data/users",
+    "_설명": "사용자별 폴더: home/(CLI 설정·인증 저장), workspace/shared/(파일), state.json(대화), runs/(증거). 전부 0700."
+  },
+  "signup": {
+    "mode": "invite",
+    "_설명": "invite: 관리자가 발급한 초대 코드로만 가입. 최초 관리자는 서버가 콘솔과 data/bootstrap-invite(0600) 에 남기는 코드로 가입."
+  },
+  "loginTimeoutMs": 600000,
+  "budget": {
+    "monthlyTokens": 0,
+    "_설명": "사용자 월 토큰 상한 기본값(입력+출력 합). 0 = 무제한. 관리자 화면에서 사용자별로 바꿀 수 있다. 사용량은 각 CLI 의 usage 출력에서 정규화해 집계하며, usage 를 안 주는 CLI 는 0 으로 잡히니 그 경우 상한은 보조 수단일 뿐이다."
+  },
+  "memory": {
+    "maxChars": 20000,
+    "_설명": "workspace/memory.md 의 내용을 모든 프롬프트 앞에 주입한다. 이 길이를 넘으면 화면에 경고(주입은 계속). 사용자가 화면에서 직접 편집·답변 추가 가능."
+  },
+  "orchestrate": {
+    "maxTasks": 6,
+    "_설명": "오케스트레이터 모드: 팀장 AI 가 계획(JSON) → 서버가 팀원 AI 에 병렬 분배 → 팀장이 종합. 세 단계 모두 일반 호출과 같은 인증·예산·증거 규칙."
+  },
+  "limits": {
+    "uploadBytes": 52428800,
+    "textChars": 200000,
+    "concurrentPerUser": 4,
+    "_설명": "업로드 1건 최대 바이트, 메시지·메모리 최대 글자, 사용자별 동시 CLI 실행 수(넘으면 순서대로 대기). GPT R10·자원 한도."
+  }
+}

@@ -1,0 +1,438 @@
+// AI Hub 서버 (v0.5, 다인 사용): 브라우저(PC/폰) ⇄ 이 서버 ⇄ 각 AI CLI.
+// 사용자마다 허브 계정이 있고, 각 사용자는 자기 폴더(data/users/<id>/) 안에서만 작업한다:
+//   home/       → CLI 의 HOME·설정 폴더(로그인 정보가 여기 저장됨: 사용자별 구독 분리)
+//   workspace/  → 공유 파일(shared/) 과 CLI 의 작업 폴더, memory.md(사용자 메모리)
+//   state.json  → 대화 기록·세션·월별 사용량 / runs/ → 실행 증거(0700/0600)
+// v0.5 추가: 사용자 메모리(memory.md 주입·저장) · 월별 토큰 예산 · 오케스트레이터 모드(팀장 AI 가 분배→종합) · 부분 출력 스트리밍
+import http from 'node:http';
+import {readFile,writeFile,readdir,stat,mkdir,chmod,appendFile} from 'node:fs/promises';
+import {createReadStream} from 'node:fs';
+import {execFile} from 'node:child_process';
+import path from 'node:path';
+import {loadConfig,runAdapter,checkAuth,startLogin} from './adapters/index.mjs';
+import {Store,sha256} from './store.mjs';
+import {Accounts} from './accounts.mjs';
+import {extractPlan} from './orchestrate.mjs';
+
+const root=new URL('../',import.meta.url);
+const config=await loadConfig();
+const dataDir=path.resolve(new URL('data/',root).pathname);
+const usersDir=path.resolve(new URL((config.users?.dir??'data/users')+'/',root).pathname);
+await mkdir(dataDir,{recursive:true,mode:0o700});await mkdir(usersDir,{recursive:true,mode:0o700});
+for(const d of [dataDir,usersDir]){try{await chmod(d,0o700);}catch{}}
+const adapters=config.adapters.filter(a=>a.enabled);
+const MIME={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.txt':'text/plain; charset=utf-8','.md':'text/plain; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.pdf':'application/pdf','.webmanifest':'application/manifest+json'};
+const BUDGET_DEFAULT=Number(config.budget?.monthlyTokens??0);        // 0 = 무제한
+const MEMORY_MAX=Number(config.memory?.maxChars??20000);              // 프롬프트에 주입하는 메모리 상한(초과분은 앞부분을 잘라 넣지 않고, 화면에 경고)
+const ORCH=config.orchestrate??{};
+const ORCH_MAX_TASKS=Number(ORCH.maxTasks??6);
+const LIMITS={uploadBytes:Number(config.limits?.uploadBytes??50*1024*1024),textChars:Number(config.limits?.textChars??200000),concurrentPerUser:Number(config.limits?.concurrentPerUser??4)};   // GPT R10·자원 한도
+// 브라우저가 실행할 수 있는 파일 형식은 /files/ 에서 다운로드로만 (GPT R11: 허브 출처에서 스크립트가 돌면 세션 쿠키로 API 호출 가능)
+const DOWNLOAD_ONLY=new Set(['.html','.htm','.xhtml','.svg','.xml','.js','.mjs','.css','.webmanifest']);
+
+// ---- 계정: 초대 코드로만 가입. 사용자가 한 명도 없으면 최초 관리자용 초대 코드를 콘솔과 data/bootstrap-invite(0600) 에 남긴다. ----
+const accounts=new Accounts(dataDir);
+try{await accounts.load();}
+catch(e){console.error(`계정 파일을 읽을 수 없어 시작하지 않습니다 (${e.message}): ${e.file}\n  → 파일이 손상됐으면 백업에서 복구하거나, 정말 처음부터 시작하려면 data/ 폴더를 옮긴 뒤 다시 실행하세요. 빈 상태로 덮어쓰지 않습니다.`);process.exit(2);}
+const bootstrapCode=await accounts.ensureBootstrap();
+
+const cookies=req=>Object.fromEntries((req.headers.cookie??'').split(';').map(s=>s.trim().split('=')).filter(([k])=>k));
+const currentUser=req=>accounts.userForToken(cookies(req).hub);
+const isSecure=req=>req.headers['x-forwarded-proto']==='https';
+const allowedHosts=new Set([...(config.allowedHosts??[]),...(process.env.HUB_ALLOWED_HOSTS?process.env.HUB_ALLOWED_HOSTS.split(','):[])].map(s=>s.trim()).filter(Boolean));
+// 변경 요청(POST)은 Host 허용 목록 + Origin 일치 + JSON 형식까지 확인한 뒤에만 처리한다.
+function mutationGate(req,expectJson=true){
+  const host=req.headers.host??'';
+  if(allowedHosts.size&&!allowedHosts.has(host))return {error:'host_not_allowed',status:403};
+  const origin=req.headers.origin;
+  const scheme=isSecure(req)?'https':'http';
+  if(!origin||origin!==`${scheme}://${host}`)return {error:'origin_not_allowed',status:403};
+  if(expectJson&&!(req.headers['content-type']??'').startsWith('application/json'))return {error:'json_required',status:415};
+  return null;
+}
+const setSessionCookie=(req,res,token)=>res.setHeader('Set-Cookie',`hub=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${30*24*3600}${isSecure(req)?'; Secure':''}`);
+const clearSessionCookie=(req,res)=>res.setHeader('Set-Cookie',`hub=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${isSecure(req)?'; Secure':''}`);
+
+// ---- 사용자별 컨텍스트: 폴더·대화 저장소·인증 상태·SSE 클라이언트·진행 중인 CLI 로그인 ----
+// 초기화 중인 Promise 를 캐시해 같은 사용자의 동시 첫 요청이 컨텍스트를 두 번 만들지 않게 한다 (검수 FAIL 7).
+const contexts=new Map();
+const contextPromises=new Map();
+async function mkPrivate(d){await mkdir(d,{recursive:true,mode:0o700});try{await chmod(d,0o700);}catch{}}
+async function userContext(user){
+  let ctx=contexts.get(user.id);if(ctx){ctx.user=user;return ctx;}
+  let p=contextPromises.get(user.id);if(p)return p;
+  p=(async()=>{
+    const dir=path.join(usersDir,String(user.id));
+    const home=path.join(dir,'home'),workspace=path.join(dir,'workspace'),shared=path.join(workspace,'shared'),runs=path.join(dir,'runs');
+    const tmpDir=path.join(home,'.tmp');
+    for(const d of [dir,home,tmpDir,workspace,shared,runs])await mkPrivate(d);
+    const store=new Store(new URL('file://'+path.join(dir,'state.json')));
+    await store.load();   // 손상이면 던진다 → 이 사용자 요청은 500, 다른 사용자는 영향 없음 (GPT R05)
+    await ensureGitRepo(workspace);
+    const c={user,dir,home,tmpDir,workspace,shared,runs,memoryFile:path.join(workspace,'memory.md'),store,authState:{},clients:new Set(),logins:{},running:new Set(),active:0,queue:[]};
+    contexts.set(user.id,c);contextPromises.delete(user.id);return c;
+  })();
+  contextPromises.set(user.id,p);
+  try{return await p;}catch(e){contextPromises.delete(user.id);throw e;}
+}
+// Codex 비대화형 실행은 작업 폴더가 git 저장소이길 요구한다(GPT 배포 점검). git 이 있으면 사용자 workspace 를 한 번 init 한다. 없으면 건너뛰고 기록만.
+function ensureGitRepo(workspace){
+  return new Promise(resolve=>{
+    stat(path.join(workspace,'.git')).then(()=>resolve(true),()=>{
+      execFile('git',['init','-q'],{cwd:workspace,env:{PATH:process.env.PATH,HOME:workspace}},err=>{if(err)console.warn('git init 생략:',err.code??err.message);resolve(!err);});
+    });
+  });
+}
+// 자식 CLI 에 넘기는 사용자별 환경: HOME·XDG·임시 폴더·Windows 설정 폴더를 사용자 home 아래로 (검수 FAIL 9-3), 어댑터별 perUserEnv({home} 치환)를 추가.
+function userEnv(ctx,adapter){
+  const env={HOME:ctx.home,USERPROFILE:ctx.home,APPDATA:path.join(ctx.home,'AppData/Roaming'),LOCALAPPDATA:path.join(ctx.home,'AppData/Local'),TMPDIR:ctx.tmpDir,TMP:ctx.tmpDir,TEMP:ctx.tmpDir,XDG_CONFIG_HOME:path.join(ctx.home,'.config'),XDG_DATA_HOME:path.join(ctx.home,'.local/share'),XDG_CACHE_HOME:path.join(ctx.home,'.cache')};
+  for(const [k,v] of Object.entries(adapter.perUserEnv??{}))env[k]=String(v).replace(/\{home\}/g,()=>ctx.home);
+  return env;
+}
+function emit(ctx,type,data){const line=`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;for(const res of ctx.clients)res.write(line);}
+// 사용자의 열린 SSE 와 진행 중 CLI 로그인을 닫는다 (계정 중지·로그아웃 시, 검수 FAIL 7). tokenHash 를 주면 그 세션의 SSE 만.
+function closeUserStreams(userId,tokenHash=null){
+  const tctx=contexts.get(userId);if(!tctx)return;
+  for(const c of [...tctx.clients]){if(tokenHash&&c.hubTokenHash!==tokenHash)continue;try{c.end();}catch{}tctx.clients.delete(c);}
+  if(!tokenHash){
+    for(const l of Object.values(tctx.logins))if(l?.status==='running'&&l.handle)l.handle.cancel();
+    for(const ac of tctx.running)ac.abort();   // 진행 중인 모델 실행(인증 확인 단계 포함)도 끊는다 (GPT R08/F03)
+    for(const w of tctx.queue.splice(0))w.reject(Object.assign(new Error('cancelled'),{cancelled:true}));   // 대기 중이던 요청은 취소로 끝낸다 (GPT F04)
+  }
+}
+const isDisabled=ctx=>!!(accounts.userById(ctx.user.id)?.disabled);
+// 사용자별 동시 실행 상한 (GPT R10). 상한을 넘는 호출은 순서대로 기다린다.
+function acquireSlot(ctx){
+  if(ctx.active<LIMITS.concurrentPerUser){ctx.active++;return Promise.resolve();}
+  return new Promise((resolve,reject)=>ctx.queue.push({resolve:()=>{ctx.active++;resolve();},reject}));
+}
+function releaseSlot(ctx){ctx.active--;const next=ctx.queue.shift();if(next)next.resolve();}
+
+const json=(res,v,status=200)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(v));};
+async function bodyBytes(req){const chunks=[];for await(const c of req)chunks.push(c);return Buffer.concat(chunks);}
+async function bodyJson(req){try{return JSON.parse((await bodyBytes(req)).toString('utf8'));}catch{return undefined;}}
+// 파일 이름: 경로 구분자 치환 + '.'/'..' 같은 점만 있는 이름 금지 (검수 FAIL 9-1)
+const safeName=n=>String(n??'').replace(/[\\/]/g,'_').replace(/[^\w.\-가-힣 ()\[\]]/g,'_').replace(/^\.+$/,'').slice(0,200)||'file';
+
+async function listFiles(ctx){
+  const names=await readdir(ctx.shared);const out=[];
+  for(const n of names.sort()){const s=await stat(path.join(ctx.shared,n));if(s.isFile())out.push({name:n,bytes:s.size,at:s.mtime.toISOString()});}
+  return out;
+}
+// ---- v0.5 사용자 메모리: workspace/memory.md (0600). 프롬프트 앞에 주입되고, CLI 도 작업 폴더에서 직접 읽을 수 있다. ----
+async function readMemory(ctx){try{return await readFile(ctx.memoryFile,'utf8');}catch{return '';}}
+// 쓰기·추가는 사용자별로 직렬화 (Gemini FAIL5)
+function queueMemory(ctx,fn){ctx._memChain=(ctx._memChain??Promise.resolve()).then(fn,fn);return ctx._memChain;}
+function writeMemory(ctx,text){return queueMemory(ctx,async()=>{await writeFile(ctx.memoryFile,String(text??''),{encoding:'utf8',mode:0o600});try{await chmod(ctx.memoryFile,0o600);}catch{}});}
+function appendMemory(ctx,entry){return queueMemory(ctx,async()=>{await appendFile(ctx.memoryFile,entry,{encoding:'utf8',mode:0o600});try{await chmod(ctx.memoryFile,0o600);}catch{}});}
+const memoryPublic=text=>({chars:text.length,overLimit:text.length>MEMORY_MAX,maxChars:MEMORY_MAX});
+
+// ---- v0.5 토큰 예산: 사용자별 월 상한(관리자 설정, 없으면 config 기본값). 0 = 무제한 ----
+function budgetFor(ctx){
+  const limit=Number(ctx.user.budget?.monthlyTokens??BUDGET_DEFAULT)||0;
+  const u=ctx.store.usageFor();
+  return {month:u.month,tokens:u.tokens,calls:u.total.calls,byAdapter:u.byAdapter,limit,exceeded:limit>0&&u.tokens>=limit};
+}
+
+const loginPublic=l=>l?{status:l.status,urls:l.urls??[],codes:l.codes??[],lastLine:l.lastLine??'',error:l.error??null,startedAt:l.startedAt,endedAt:l.endedAt??null}:null;
+async function statePayload(ctx){
+  const memory=await readMemory(ctx);
+  return {user:accounts.publicUser(ctx.user),adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream})),messages:ctx.store.state.messages,workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
+}
+// 프롬프트 합성: (메모리) + (다른 AI 답변 전문) + 본문 + 첨부 안내. 원문을 요약하거나 자르지 않는다.
+function composePrompt({text,files=[],handoff=null,memory=''}){
+  let p='';
+  if(memory&&memory.trim())p+=`[내 메모리 — 이전 대화에서 저장해 둔 맥락·결정·취향입니다. 작업 폴더의 memory.md 와 같습니다. 참고만 하고, 사용자 요청이 우선입니다.]\n${memory.trim()}\n\n`;
+  if(handoff)p+=`[다른 AI(${handoff.fromLabel})의 답변 전문입니다. 그대로 검토·참고하세요.]\n${handoff.text}\n\n[사용자 요청]\n`;
+  p+=text;
+  if(files.length)p+=`\n\n[첨부 파일 — 현재 작업 폴더의 shared/ 안에 있습니다. 직접 읽어서 참고하세요]\n`+files.map(f=>`- shared/${f}`).join('\n');
+  return p;
+}
+
+// ---- 인증 종류 확인(사용자별). 호출 직전마다 그 사용자의 HOME 으로 상태 명령을 실행해 판정. 노출 필드는 허용 목록만. ----
+const AUTH_FIELDS=['state','reason','authMethod','apiProvider','subscriptionType','exitCode','at'];
+const publicAuth=r=>Object.fromEntries(AUTH_FIELDS.filter(k=>r[k]!==undefined).map(k=>[k,r[k]]));
+async function ensureAuth(ctx,adapter,signal=null){
+  const cached=ctx.authState[adapter.id],ttl=config.authCacheMs??0;
+  if(ttl>0&&cached&&cached.state==='subscription'&&Date.now()-Date.parse(cached.at)<ttl)return cached;
+  const r=await checkAuth(adapter,process.env,userEnv(ctx,adapter),signal);
+  ctx.authState[adapter.id]=publicAuth({...r,at:new Date().toISOString()});
+  return ctx.authState[adapter.id];
+}
+async function refreshAuth(ctx){for(const a of adapters){const r=await checkAuth(a,process.env,userEnv(ctx,a));ctx.authState[a.id]=publicAuth({...r,at:new Date().toISOString()});}emit(ctx,'state',await statePayload(ctx));}
+
+// ---- 한 AI 호출 한 번 = 답변 메시지 하나. 인증·예산 게이트 → 실행(부분 출력 스트리밍) → 증거·사용량 기록. ----
+// 반환: 저장된 답변 메시지(status done/blocked/error). 예외를 던지지 않는다.
+async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={}}){
+  const {store}=ctx;
+  const reply=store.add({role:'assistant',adapter:adapter.id,replyTo,kind,status:'running',text:'',...extra});
+  emit(ctx,'message',reply);
+  const evidenceDir=path.join(ctx.runs,`${reply.id}-${adapter.id}`);
+  const ac=new AbortController();let slot=false;
+  ctx.running.add(ac);   // 큐 대기·인증 확인·실행을 하나의 취소 수명으로 (GPT F03): 중지되면 어느 단계든 abort 된다
+  try{
+    await acquireSlot(ctx);slot=true;
+    if(isDisabled(ctx)||ac.signal.aborted){   // 단계마다 다시 본다: 오케스트레이터 중간에 중지돼도 다음 CLI 를 띄우지 않는다 (GPT R08 / Gemini FAIL4)
+      store.update(reply.id,{status:'blocked',error:'user_disabled'});
+      emit(ctx,'message',store.get(reply.id));await store.save();return store.get(reply.id);
+    }
+    const auth=await ensureAuth(ctx,adapter,ac.signal);
+    if(isDisabled(ctx)||ac.signal.aborted){   // 인증 확인(비동기) 도중 중지됨 → 모델을 띄우지 않는다 (GPT F03)
+      store.update(reply.id,{status:'cancelled',error:'cancelled'});
+      emit(ctx,'message',store.get(reply.id));await store.save();return store.get(reply.id);
+    }
+    if(auth.state!=='subscription'){
+      const code={api_key:'api_key_auth_detected',third_party:'third_party_auth_detected',not_logged_in:'not_logged_in'}[auth.state]??'auth_unverified';
+      store.update(reply.id,{status:'blocked',error:code,authCheck:publicAuth(auth)});
+      emit(ctx,'message',store.get(reply.id));await store.save();return store.get(reply.id);
+    }
+    const b=budgetFor(ctx);
+    if(b.exceeded){
+      store.update(reply.id,{status:'blocked',error:'budget_exceeded',budget:{month:b.month,tokens:b.tokens,limit:b.limit}});
+      emit(ctx,'message',store.get(reply.id));await store.save();return store.get(reply.id);
+    }
+    const session=store.session(adapter.id),epoch=store.epoch(adapter.id);   // 세대 기록 (GPT R09)
+    let lastEmit=0;
+    const onChunk=(_s,info)=>{   // 스트리밍: 150ms 에 한 번만 화면으로. 저장·증거에는 쓰지 않는다.
+      const now=Date.now();if(now-lastEmit<150)return;lastEmit=now;
+      emit(ctx,'partial',{id:reply.id,adapter:adapter.id,partial:info.partial,bytes:info.bytes,elapsedMs:info.elapsedMs});
+    };
+    const r=await runAdapter(adapter,{prompt,cwd:ctx.workspace,session,timeoutMs:config.timeoutMs,evidenceDir,extraEnv:userEnv(ctx,adapter),onChunk,signal:ac.signal});
+    store.setSession(adapter.id,r.session,epoch);   // "새 대화" 이후에 끝난 실행은 옛 세션을 되살리지 않는다
+    const used=store.addUsage(adapter.id,r.usage);
+    store.update(reply.id,{status:'done',text:r.text,usage:r.usage,elapsedMs:r.elapsedMs,session:r.session??session,hash:sha256(r.text),exitCode:r.exitCode,evidence:r.evidence,envBlockedNames:r.envBlockedNames,authCheck:publicAuth(auth),usageMonth:{...used}});
+  }catch(e){
+    const evidenceFailed=/^evidence_/.test(e.message);
+    store.update(reply.id,{status:e.cancelled?'cancelled':'error',error:e.message,exitCode:e.exitCode??null,signal:e.signal??null,timedOut:!!e.timedOut,parseFailed:!!e.parseFailed,elapsedMs:e.elapsedMs??null,evidence:e.evidence??null,evidencePreserved:!!e.evidence&&!evidenceFailed,envBlockedNames:e.envBlockedNames??null,...(evidenceFailed&&typeof e.text==='string'?{text:e.text,hash:sha256(e.text),unstoredAnswer:true}:{})});
+  }
+  finally{ctx.running.delete(ac);if(slot)releaseSlot(ctx);}
+  emit(ctx,'message',store.get(reply.id));await store.save();
+  emit(ctx,'budget',budgetFor(ctx));
+  return store.get(reply.id);
+}
+
+async function dispatch(ctx,{text,targets,files,handoff}){
+  const {store}=ctx;
+  const userMsg=store.add({role:'user',text,files,targets,handoffFrom:handoff?.messageId??null});
+  emit(ctx,'message',userMsg);await store.save();
+  const prompt=composePrompt({text,files,handoff,memory:await readMemory(ctx)});
+  const work=Promise.all(targets.map(id=>{const adapter=adapters.find(a=>a.id===id);if(!adapter)return;return runOne(ctx,adapter,{prompt,replyTo:userMsg.id});}));
+  work.catch(e=>console.error('dispatch',e));
+  return userMsg;
+}
+
+// ---- v0.5 오케스트레이터: 팀장 AI 에게 목표를 주면 ① 계획(JSON) → ② 서버가 워커 AI 들에 분배(병렬) → ③ 팀장이 종합. ----
+// 세 단계 모두 일반 호출과 같은 인증·예산·증거 규칙을 탄다. 계획 JSON 은 팀장 답변 본문에서 뽑고, 못 뽑으면 plan_parse_failed 로 끝낸다.
+function planPrompt({goal,files,lead,workers,memory}){
+  const roster=workers.map(w=>`- "${w.id}": ${w.label}${w.roleHint?' — '+w.roleHint:''}`).join('\n');
+  const body=`### HUB:PLAN\n당신은 이 AI 오피스의 팀장(오케스트레이터)입니다. 아래 목표를 읽고, 팀원 AI 에게 나눠 줄 작업을 계획하세요.\n\n[팀원 — worker 값으로 정확히 이 id 를 쓰세요]\n${roster}\n\n[규칙]\n- 작업은 최대 ${ORCH_MAX_TASKS}개. 서로 독립적으로 수행 가능해야 합니다(병렬 실행).\n- 각 작업의 prompt 는 그 팀원이 아무 맥락 없이 읽어도 수행할 수 있게 완결된 지시문으로 쓰세요. 목표의 필요한 부분을 그대로 포함하세요.\n- 팀원에게 맡길 필요 없이 바로 답할 수 있으면 tasks 를 빈 배열로 두고 answer 에 최종 답을 쓰세요.\n- 답변은 아래 JSON 하나만, 다른 설명 없이:\n{"tasks":[{"worker":"<id>","title":"<짧은 제목>","prompt":"<완결된 지시문>"}],"note":"<계획 의도 한 줄>","answer":null}\n\n[목표]\n${goal}`;
+  return composePrompt({text:body,files,memory});
+}
+function synthPrompt({goal,results}){
+  const parts=results.map((r,i)=>`--- 작업 ${i+1}: ${r.title||'(제목 없음)'} · 담당 ${r.label} · 상태 ${r.status}${r.error?' ('+r.error+')':''} ---\n${r.text||'(결과 없음)'}`).join('\n\n');
+  return `### HUB:SYNTHESIZE\n당신은 팀장입니다. 아래는 당신이 계획해 팀원들이 수행한 작업 결과 전문입니다. 결과를 검토·종합해 목표에 대한 최종 답변을 작성하세요. 결과끼리 모순되면 지적하고, 실패한 작업은 무엇이 빠졌는지 밝히세요.\n\n[목표]\n${goal}\n\n[팀원 결과]\n${parts}`;
+}
+async function orchestrate(ctx,{text,files,leadId,workerIds}){
+  const {store}=ctx;
+  const lead=adapters.find(a=>a.id===leadId);
+  const workers=workerIds.map(id=>adapters.find(a=>a.id===id)).filter(a=>a&&a.id!==leadId);
+  const userMsg=store.add({role:'user',text,files,targets:[leadId],mode:'orchestrate',lead:leadId,workers:workers.map(w=>w.id)});
+  emit(ctx,'message',userMsg);await store.save();
+  const run=(async()=>{
+    const memory=await readMemory(ctx);
+    // ① 계획
+    const plan=await runOne(ctx,lead,{prompt:planPrompt({goal:text,files,lead,workers,memory}),replyTo:userMsg.id,kind:'plan'});
+    if(plan.status!=='done')return;
+    if(isDisabled(ctx)){store.update(plan.id,{orchestrateError:'user_disabled'});emit(ctx,'message',store.get(plan.id));await store.save();return;}   // 계획 뒤 중지됨 → 팀원 단계 자체를 만들지 않는다 (GPT R08)
+    const parsed=extractPlan(plan.text,workers.map(w=>w.id),ORCH_MAX_TASKS);
+    if(!parsed){store.update(plan.id,{status:'error',error:'plan_parse_failed',text:plan.text});emit(ctx,'message',store.get(plan.id));await store.save();return;}
+    store.update(plan.id,{plan:{tasks:parsed.tasks.map(t=>({worker:t.worker,title:t.title})),note:parsed.note,dropped:parsed.dropped,requested:parsed.requested}});emit(ctx,'message',store.get(plan.id));await store.save();
+    if(!parsed.tasks.length){   // 팀장이 직접 답함
+      const final=store.add({role:'assistant',adapter:lead.id,replyTo:userMsg.id,kind:'final',status:'done',text:parsed.answer??plan.text,elapsedMs:0,derivedFrom:plan.id});
+      emit(ctx,'message',final);await store.save();return;
+    }
+    // ② 분배 (병렬, 사용자 동시 실행 상한 안에서). 각 작업 프롬프트에는 메모리를 다시 넣지 않되 첨부 파일 목록은 넣는다 (Gemini FAIL1-4).
+    const fileNote=files.length?`\n\n[첨부 파일 — 현재 작업 폴더의 shared/ 안에 있습니다. 직접 읽어서 참고하세요]\n`+files.map(f=>`- shared/${f}`).join('\n'):'';
+    const results=await Promise.all(parsed.tasks.map(async(t,i)=>{
+      const w=workers.find(x=>x.id===t.worker);
+      const r=await runOne(ctx,w,{prompt:`### HUB:TASK ${i+1}/${parsed.tasks.length} — ${t.title}\n${t.prompt}${fileNote}`,replyTo:plan.id,kind:'task',extra:{taskTitle:t.title,taskIndex:i+1}});
+      return {title:t.title,label:w.label,status:r.status,error:r.error??null,text:r.text??''};
+    }));
+    // ③ 종합 — 성공한 작업이 하나도 없으면 팀장을 다시 부르지 않는다 (Gemini FAIL4-2). 중지됐으면 runOne 이 막는다.
+    if(isDisabled(ctx)){store.update(plan.id,{orchestrateError:'user_disabled'});emit(ctx,'message',store.get(plan.id));await store.save();return;}
+    if(results.every(r=>r.status!=='done')){store.update(plan.id,{orchestrateError:'all_tasks_failed'});emit(ctx,'message',store.get(plan.id));await store.save();return;}
+    await runOne(ctx,lead,{prompt:synthPrompt({goal:text,results}),replyTo:userMsg.id,kind:'final',extra:{derivedFrom:plan.id}});
+  })();
+  run.catch(e=>console.error('orchestrate',e));
+  return userMsg;
+}
+
+// ---- 화면 안 CLI 로그인: 사용자별 HOME 으로 공식 로그인 명령 실행. URL·코드(·가린 마지막 줄)만 화면에, 원문은 사용자 runs/ 에 0600. ----
+function beginLogin(ctx,adapter){
+  const cur=ctx.logins[adapter.id];
+  if(cur&&cur.status==='running')return {error:'login_already_running'};
+  const startedAt=new Date().toISOString();
+  const state={status:'running',urls:[],codes:[],lastLine:'',error:null,startedAt,handle:null};
+  ctx.logins[adapter.id]=state;
+  const evidenceDir=path.join(ctx.runs,`login-${adapter.id}-${Date.now()}`);
+  const handle=startLogin(adapter,{cwd:ctx.workspace,extraEnv:userEnv(ctx,adapter),timeoutMs:config.loginTimeoutMs??600000,evidenceDir,
+    onEvent:e=>{Object.assign(state,{urls:e.urls,codes:e.codes,lastLine:e.lastLine});emit(ctx,'cli-login',{adapterId:adapter.id,login:loginPublic(state)});}});
+  if(!handle||handle.error){state.status='error';state.error=handle?.error??'login_not_configured';state.endedAt=new Date().toISOString();return {error:state.error};}
+  state.handle=handle;
+  handle.done.then(async r=>{
+    Object.assign(state,{status:r.status,error:r.error,urls:r.urls??state.urls,codes:r.codes??state.codes,lastLine:'',endedAt:new Date().toISOString(),evidence:r.evidence});   // 끝나면 마지막 줄 비움 (검수 FAIL 4)
+    emit(ctx,'cli-login',{adapterId:adapter.id,login:loginPublic(state)});
+    await refreshAuth(ctx);   // 로그인 결과를 곧바로 인증 상태에 반영
+  });
+  return {ok:true,login:loginPublic(state)};
+}
+
+const requireAdmin=user=>user.role==='admin';
+const server=http.createServer(async(req,res)=>{
+  try{
+    const url=new URL(req.url,'http://x');
+    const file=url.pathname==='/'?'index.html':url.pathname.slice(1);
+    const isStatic=req.method==='GET'&&/^[\w.\-]+$/.test(file)&&!file.startsWith('api');
+    if(isStatic){ // 화면 자체는 로그인 없이 열린다. API 는 전부 세션 필요.
+      try{const data=await readFile(new URL('public/'+file,root));res.writeHead(200,{'Content-Type':MIME[path.extname(file)]??'application/octet-stream','Cache-Control':'no-store'});return res.end(data);}catch{}
+      return json(res,{error:'not_found'},404);
+    }
+    const user=currentUser(req);
+    // ---- 계정 API (로그인 전) ----
+    if(req.method==='GET'&&url.pathname==='/api/me'){
+      return json(res,user?{user:accounts.publicUser(user)}:{user:null,signup:config.signup?.mode??'invite',firstRun:!accounts.hasUsers()},user?200:401);
+    }
+    if(req.method==='POST'&&['/api/signup','/api/login','/api/logout'].includes(url.pathname)){
+      const gate=mutationGate(req);if(gate)return json(res,{error:gate.error},gate.status);
+      const a=await bodyJson(req);if(!a)return json(res,{error:'invalid_json'},400);
+      if(url.pathname==='/api/signup'){
+        const r=await accounts.signup({inviteCode:a.invite,username:a.username,password:a.password});
+        if(r.error)return json(res,{error:r.error},400);
+        await accounts.ensureBootstrap();   // 사용자가 생겼으면(역할 무관) bootstrap 초대 폐기 및 파일 제거 (검수 FAIL 6)
+        const l=await accounts.login({username:a.username,password:a.password,key:'signup:'+r.user.id});
+        setSessionCookie(req,res,l.token);return json(res,{ok:true,user:l.user});
+      }
+      if(url.pathname==='/api/login'){
+        // 잠금 키의 아이디 정규화를 Accounts.login 과 똑같이(trim+lower) — 공백 변형으로 잠금 우회 불가 (검수 FAIL 2)
+        const r=await accounts.login({username:a.username,password:a.password,key:`${req.socket.remoteAddress}|${String(a.username??'').trim().toLowerCase()}`});
+        if(r.error)return json(res,{error:r.error},r.error==='too_many_attempts'?429:401);
+        setSessionCookie(req,res,r.token);return json(res,{ok:true,user:r.user});
+      }
+      if(url.pathname==='/api/logout'){const tok=cookies(req).hub;if(user&&tok)closeUserStreams(user.id,sha256(tok));await accounts.logout(tok);clearSessionCookie(req,res);return json(res,{ok:true});}
+    }
+    if(!user)return json(res,{error:'login_required'},401);
+    const ctx=await userContext(user);
+
+    if(req.method==='GET'&&url.pathname==='/api/state')return json(res,{...await statePayload(ctx),files:await listFiles(ctx)});
+    if(req.method==='GET'&&url.pathname==='/api/memory'){const text=await readMemory(ctx);return json(res,{text,...memoryPublic(text)});}
+    if(req.method==='GET'&&url.pathname==='/api/events'){
+      res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store','Connection':'keep-alive'});
+      res.write('retry: 2000\n\n');res.hubTokenHash=sha256(cookies(req).hub??'');ctx.clients.add(res);req.on('close',()=>ctx.clients.delete(res));
+      const ping=setInterval(()=>res.write(': ping\n\n'),20000);req.on('close',()=>clearInterval(ping));return;
+    }
+    if(req.method==='GET'&&url.pathname.startsWith('/files/')){
+      const name=safeName(decodeURIComponent(url.pathname.slice(7)));const p=path.join(ctx.shared,name);
+      try{const st=await stat(p);if(!st.isFile())return json(res,{error:'not_found'},404);}catch{return json(res,{error:'not_found'},404);}
+      const ext=path.extname(name).toLowerCase();
+      const headers={'Content-Type':MIME[ext]??'application/octet-stream','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'",'Cache-Control':'no-store'};
+      if(DOWNLOAD_ONLY.has(ext))headers['Content-Disposition']=`attachment; filename*=UTF-8''${encodeURIComponent(name)}`;
+      res.writeHead(200,headers);
+      const stream=createReadStream(p);stream.on('error',()=>res.destroy());return stream.pipe(res);
+    }
+    // ---- 관리자 ----
+    if(url.pathname.startsWith('/api/admin/')){
+      if(!requireAdmin(user))return json(res,{error:'admin_required'},403);
+      if(req.method==='GET'&&url.pathname==='/api/admin/users')return json(res,{users:accounts.users.map(u=>accounts.publicUser(u)),budgetDefault:BUDGET_DEFAULT});
+      if(req.method==='GET'&&url.pathname==='/api/admin/invites')return json(res,{invites:accounts.listInvites()});
+      if(req.method==='POST'){
+        const gate=mutationGate(req);if(gate)return json(res,{error:gate.error},gate.status);
+        const a=await bodyJson(req);if(!a)return json(res,{error:'invalid_json'},400);
+        if(url.pathname==='/api/admin/invites'){const r=await accounts.createInvite({createdBy:user.username,role:a.role==='admin'?'admin':'user'});return json(res,{ok:true,code:r.code,invite:r.invite});}
+        if(url.pathname==='/api/admin/invites/revoke')return json(res,{ok:await accounts.revokeInvite(String(a.id))});
+        if(url.pathname==='/api/admin/users/disable'){
+          const targetId=Number(a.userId);if(targetId===user.id)return json(res,{error:'cannot_disable_self'},400);
+          const ok=await accounts.setDisabled(targetId,!!a.disabled);
+          if(ok&&a.disabled)closeUserStreams(targetId);   // 중지 즉시 열린 SSE·로그인 프로세스도 끊는다 (검수 FAIL 7)
+          return json(res,{ok});
+        }
+        if(url.pathname==='/api/admin/users/budget'){
+          const targetId=Number(a.userId);const n=a.monthlyTokens===null||a.monthlyTokens===undefined?null:Number(a.monthlyTokens);
+          if(n!==null&&(!Number.isFinite(n)||n<0))return json(res,{error:'budget_invalid'},400);
+          const ok=await accounts.setBudget(targetId,n===null?null:{monthlyTokens:Math.floor(n)});
+          const tctx=contexts.get(targetId);if(tctx){tctx.user=accounts.userById(targetId);emit(tctx,'budget',budgetFor(tctx));}
+          return json(res,{ok});
+        }
+      }
+      return json(res,{error:'not_found'},404);
+    }
+    if(req.method==='POST'){
+      const gate=mutationGate(req,url.pathname!=='/api/files');
+      if(gate)return json(res,{error:gate.error},gate.status);
+      if(url.pathname==='/api/send'){
+        const a=await bodyJson(req);if(!a)return json(res,{error:'invalid_json'},400);
+        if(typeof a.text!=='string'||!a.text.trim())return json(res,{error:'text_required'},400);
+        if(a.text.length>LIMITS.textChars)return json(res,{error:'text_too_long',max:LIMITS.textChars},413);
+        const files=[...new Set((Array.isArray(a.files)?a.files:[]).map(safeName))].slice(0,50);
+        if(a.mode==='orchestrate'){
+          const lead=adapters.find(x=>x.id===a.lead);if(!lead)return json(res,{error:'lead_required'},400);
+          const workerIds=[...new Set(Array.isArray(a.workers)?a.workers:[])].filter(id=>id!==lead.id&&adapters.some(x=>x.id===id));
+          if(!workerIds.length)return json(res,{error:'workers_required'},400);
+          const m=await orchestrate(ctx,{text:a.text,files,leadId:lead.id,workerIds});return json(res,{ok:true,id:m.id});
+        }
+        const targets=[...new Set(Array.isArray(a.targets)?a.targets:[])].filter(id=>adapters.some(x=>x.id===id));if(!targets.length)return json(res,{error:'targets_required'},400);   // 중복 제거 (GPT R10)
+        let handoff=null;
+        if(a.handoffFrom){const m=ctx.store.get(a.handoffFrom);if(!m||m.role!=='assistant'||m.status!=='done')return json(res,{error:'handoff_source_invalid'},400);handoff={messageId:m.id,fromLabel:adapters.find(x=>x.id===m.adapter)?.label??m.adapter,text:m.text};}
+        const m=await dispatch(ctx,{text:a.text,targets,files,handoff});return json(res,{ok:true,id:m.id});
+      }
+      if(url.pathname==='/api/files'){
+        const name=safeName(url.searchParams.get('name'));
+        if(Number(req.headers['content-length']??0)>LIMITS.uploadBytes)return json(res,{error:'file_too_large',max:LIMITS.uploadBytes},413);
+        const bytes=await bodyBytes(req);if(bytes.length>LIMITS.uploadBytes)return json(res,{error:'file_too_large',max:LIMITS.uploadBytes},413);
+        await writeFile(path.join(ctx.shared,name),bytes,{mode:0o600});emit(ctx,'files',await listFiles(ctx));return json(res,{ok:true,name,bytes:bytes.length});
+      }
+      if(url.pathname==='/api/save'){
+        const a=await bodyJson(req);const m=a&&ctx.store.get(a.messageId);if(!m||typeof m.text!=='string')return json(res,{error:'message_not_found'},404);
+        const name=safeName(a.name||`${m.adapter??'user'}-${m.id}.txt`);await writeFile(path.join(ctx.shared,name),m.text,{encoding:'utf8',mode:0o600});emit(ctx,'files',await listFiles(ctx));return json(res,{ok:true,name});
+      }
+      // ---- v0.5 메모리: 전체 교체 / 답변(또는 메모)을 날짜와 함께 덧붙이기 ----
+      if(url.pathname==='/api/memory'){
+        const a=await bodyJson(req);if(!a||typeof a.text!=='string')return json(res,{error:'text_required'},400);
+        if(a.text.length>LIMITS.textChars)return json(res,{error:'text_too_long',max:LIMITS.textChars},413);
+        await writeMemory(ctx,a.text);const mem=memoryPublic(a.text);emit(ctx,'memory',mem);return json(res,{ok:true,...mem});
+      }
+      if(url.pathname==='/api/memory/append'){
+        const a=await bodyJson(req);if(!a)return json(res,{error:'invalid_json'},400);
+        let body='';let source='메모';
+        if(a.messageId!==undefined&&a.messageId!==null){const m=ctx.store.get(Number(a.messageId));if(!m||typeof m.text!=='string')return json(res,{error:'message_not_found'},404);body=m.text;source=m.role==='user'?'내 메시지':`${adapters.find(x=>x.id===m.adapter)?.label??m.adapter} 답변 #${m.id}`;}
+        if(typeof a.note==='string'&&a.note.trim())body=body?`${a.note.trim()}\n\n${body}`:a.note.trim();
+        if(!body.trim())return json(res,{error:'text_required'},400);
+        const entry=`\n## ${new Date().toISOString().slice(0,16).replace('T',' ')} · ${source}\n${body.trim()}\n`;
+        await appendMemory(ctx,entry);const mem=memoryPublic(await readMemory(ctx));emit(ctx,'memory',mem);return json(res,{ok:true,...mem});
+      }
+      if(url.pathname==='/api/reset'){const a=await bodyJson(req);if(!a)return json(res,{error:'invalid_json'},400);ctx.store.resetSession(a.adapterId);await ctx.store.save();emit(ctx,'state',await statePayload(ctx));return json(res,{ok:true});}
+      if(url.pathname==='/api/auth-check'){await refreshAuth(ctx);return json(res,{ok:true,auth:ctx.authState});}
+      if(url.pathname==='/api/cli-login'){
+        const a=await bodyJson(req);const adapter=a&&adapters.find(x=>x.id===a.adapterId);if(!adapter)return json(res,{error:'adapter_not_found'},404);
+        if(!adapter.login||!Array.isArray(adapter.login.args))return json(res,{error:'login_not_configured'},400);
+        const r=beginLogin(ctx,adapter);if(r.error)return json(res,{error:r.error},409);
+        emit(ctx,'cli-login',{adapterId:adapter.id,login:r.login});return json(res,{ok:true,login:r.login});
+      }
+      if(url.pathname==='/api/cli-login/input'){ // 화면에서 입력한 텍스트(인증 코드 등)를 로그인 프로세스의 stdin 으로
+        const a=await bodyJson(req);const l=a&&ctx.logins[a.adapterId];if(!l||l.status!=='running'||!l.handle)return json(res,{error:'login_not_running'},409);
+        if(typeof a.text!=='string')return json(res,{error:'text_required'},400);
+        l.handle.write(a.text);return json(res,{ok:true});
+      }
+      if(url.pathname==='/api/cli-login/cancel'){const a=await bodyJson(req);const l=a&&ctx.logins[a.adapterId];if(l?.status==='running'&&l.handle)l.handle.cancel();return json(res,{ok:true});}
+      return json(res,{error:'not_found'},404);
+    }
+    json(res,{error:'not_found'},404);
+  }catch(e){json(res,{error:/^(state_|accounts_)/.test(e.message)?e.message:'server_error'},500);console.error(e);}
+});
+const port=Number(process.env.PORT??config.port),host=process.env.HOST??config.host;
+if(!allowedHosts.size)for(const h of [`127.0.0.1:${port}`,`localhost:${port}`])allowedHosts.add(h);
+server.listen(port,host,()=>{
+  console.log(`AI Hub → http://${host}:${port}  (사용자 폴더: ${usersDir}, AI: ${adapters.map(a=>a.id).join(', ')||'없음'})`);
+  console.log(`허용 Host: ${[...allowedHosts].join(', ')}  ·  월 토큰 기본 상한: ${BUDGET_DEFAULT||'무제한'}`);
+  if(bootstrapCode)console.log(`최초 관리자 가입용 초대 코드(24시간, 1회): ${bootstrapCode}   (data/bootstrap-invite 에도 저장됨 — 화면의 "가입" 에 입력)`);
+  else console.log(`계정 ${accounts.users.length}명. 새 사용자는 관리자가 화면에서 초대 코드를 발급해 전달.`);
+});
