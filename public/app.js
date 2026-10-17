@@ -206,7 +206,7 @@ function mergeSnapshot(snap){
 function applyState(s){state.adapters=s.adapters??state.adapters;if(s.lead!==undefined)state.lead=s.lead;if(s.messages)mergeSnapshot(s);if(s.files)state.files=s.files;if(s.budget)state.budget=s.budget;if(s.memory)state.memory=s.memory;if(s.user)state.user=s.user;}
 function connect(){
   es?.close();es=new EventSource('/api/events');
-  es.onopen=async()=>{$('#conn').textContent='연결됨';$('#conn').className='conn ok';try{applyState(await api('/api/state'));renderAll();}catch{}};
+  es.onopen=async()=>{$('#conn').textContent='연결됨';$('#conn').className='conn ok';try{const snap=await api('/api/state');applyState(snap);renderAll();}catch{}};
   es.onerror=()=>{$('#conn').textContent='연결 끊김 — 재시도 중';$('#conn').className='conn bad';};
   es.addEventListener('message',e=>{const m=JSON.parse(e.data);const i=state.messages.findIndex(x=>x.id===m.id);const isNew=i<0;i>=0?state.messages[i]=m:state.messages.push(m);if(m.status!=='running')delete partials[m.id];renderTimeline();if(isNew)scrollBottom();});
   es.addEventListener('partial',e=>{const p=JSON.parse(e.data);partials[p.id]=p;const el=document.getElementById('m'+p.id);if(!el){renderTimeline();return;}const t=el.querySelector('.partial'),g=el.querySelector('.progress');const prog=`수신 중 … ${(p.bytes/1024).toFixed(1)}KB · ${(p.elapsedMs/1000).toFixed(0)}s`;if(t&&p.partial){t.textContent=p.partial;if(g)g.textContent=prog;}else renderTimeline();});
