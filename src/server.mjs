@@ -70,6 +70,8 @@ async function userContext(user){
     const home=path.join(dir,'home'),workspace=path.join(dir,'workspace'),shared=path.join(workspace,'shared'),runs=path.join(dir,'runs');
     const tmpDir=path.join(home,'.tmp');
     for(const d of [dir,home,tmpDir,workspace,shared,runs])await mkPrivate(d);
+    // 어댑터별 설정 폴더({home}/.claude, {home}/.codex …)를 미리 만든다 — Codex 는 CODEX_HOME 이 없으면 상태 명령부터 실패한다 (Linux 검증)
+    for(const a of adapters)for(const v of Object.values(a.perUserEnv??{})){const p=String(v).replace(/\{home\}/g,()=>home);if(p.startsWith(home+path.sep))await mkPrivate(p);}
     const store=new Store(new URL('file://'+path.join(dir,'state.json')));
     await store.load();   // 손상이면 던진다 → 이 사용자 요청은 500, 다른 사용자는 영향 없음 (GPT R05)
     await ensureGitRepo(workspace);
@@ -294,6 +296,7 @@ function beginLogin(ctx,adapter){
 const server=http.createServer(async(req,res)=>{
   try{
     const url=new URL(req.url,'http://x');
+    if(req.method==='GET'&&url.pathname==='/healthz')return json(res,{ok:true,setupRequired:!owner.isSet});   // 배포 플랫폼 헬스체크용 (로그인 불필요, 비밀값 없음)
     const file=url.pathname==='/'?'index.html':url.pathname.slice(1);
     const isStatic=req.method==='GET'&&/^[\w.\-]+$/.test(file)&&!file.startsWith('api');
     if(isStatic){ // 화면 자체는 로그인 없이 열린다. API 는 전부 세션 필요.

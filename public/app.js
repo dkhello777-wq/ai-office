@@ -25,7 +25,7 @@ async function api(path,opts={}){
   if(r.status===401&&path!=='/api/me'){showGate({});}
   if(!r.ok)throw Error(v.error||'request_failed');return v;
 }
-const toast=t=>{document.querySelectorAll('.toast').forEach(x=>x.remove());const d=document.createElement('div');d.classList.add('toast');d.className='sys';d.textContent=t;d.style.cssText='position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:50;box-shadow:0 4px 14px rgba(0,0,0,.2)';document.body.append(d);setTimeout(()=>d.remove(),2600);};
+const toast=t=>{document.querySelectorAll('.toast').forEach(x=>x.remove());const d=document.createElement('div');d.className='sys toast';d.textContent=t;d.style.cssText='position:fixed;left:50%;bottom:90px;transform:translateX(-50%);z-index:50;box-shadow:0 4px 14px rgba(0,0,0,.2)';document.body.append(d);setTimeout(()=>d.remove(),2600);};
 
 // ---- 게이트: 최초 비밀번호 설정 / 로그인 ----
 let setupMode=false;

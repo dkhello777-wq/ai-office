@@ -269,8 +269,9 @@ export function checkAuth(adapter,parentEnv=process.env,extraEnv={},signal=null)
       clearTimeout(timer);signal?.removeEventListener('abort',onAbort);
       const o=out.finish(),e=err.finish();
       if(aborted)return resolve({id:adapter.id,state:'unverified',reason:'cancelled',exitCode:code});
-      if(code!==0)return resolve({id:adapter.id,state:'unverified',reason:'exit_'+code,exitCode:code,stderrBytes:e.bytes.length});
       const text=streams==='stderr'?e.text:streams==='both'?o.text+'\n'+e.text:o.text;
+      // 종료 코드가 0 이 아니어도 출력이 "미로그인"을 분명히 말하면 그대로 판정한다 (Codex 0.163 `login status` 는 Not logged in 을 내고 exit 1 — Linux 검증). 그 외 비정상 종료는 unverified.
+      if(code!==0){let r=null;try{r=AUTH_PARSERS[check.parser](text);}catch{}if(r?.state==='not_logged_in')return resolve({id:adapter.id,...r,exitCode:code,stderrBytes:e.bytes.length,judgedFrom:streams});return resolve({id:adapter.id,state:'unverified',reason:'exit_'+code,exitCode:code,stderrBytes:e.bytes.length});}
       const r=AUTH_PARSERS[check.parser](text);
       resolve({id:adapter.id,...r,exitCode:code,stderrBytes:e.bytes.length,judgedFrom:streams});
     });

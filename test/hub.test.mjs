@@ -168,6 +168,13 @@ test('v0.7 owner: setup once, scrypt hash only on disk, login/logout, lockout af
  await o.logout((await o.login({password:'new long password 1',key:'k4'})).token);
  const o2=new Owner(dir);await o2.load();assert.ok(o2.isSet,'persisted');
 });
+test('v0.7 checkAuth: non-zero exit with an explicit "Not logged in" line is not_logged_in, other non-zero exits stay unverified',async()=>{
+ const script=path.join(await tmp(),'status.mjs');
+ await writeFile(script,"process.stderr.write(process.env.MODE==='nli'?'warning\\nNot logged in\\n':'boom\\n');process.exit(1);");
+ const a={id:'cx',command:'node',envAllow:['MODE'],authCheck:{args:[script],parser:'codex-text',output:'both'}};
+ assert.equal((await checkAuth(a,{PATH:process.env.PATH,MODE:'nli'})).state,'not_logged_in');
+ assert.equal((await checkAuth(a,{PATH:process.env.PATH,MODE:'other'})).state,'unverified');
+});
 test('v0.4 extraEnv overrides HOME for the child but deny patterns still apply',()=>{
  const {env,blockedNames}=buildChildEnv({PATH:'/bin',HOME:'/real/home',OPENAI_API_KEY:'x'},{id:'t',envAllow:[]},{HOME:'/users/1/home',CLAUDE_CONFIG_DIR:'/users/1/home/.claude',ANTHROPIC_API_KEY:'y'});
  assert.equal(env.HOME,'/users/1/home');assert.equal(env.CLAUDE_CONFIG_DIR,'/users/1/home/.claude');assert.equal(env.ANTHROPIC_API_KEY,undefined);
@@ -308,7 +315,7 @@ test('server: send, handoff, files, evidence dir per attempt, UTF-8 body, child 
  const saved=await s.auth('/api/save',{method:'POST',body:JSON.stringify({messageId:r1.id,name:'mock-answer.txt'})});assert.equal(saved.body.name,'mock-answer.txt');
  const shared=path.join(s.dir,'data/users',String(s.admin.body.user.id),'workspace/shared');
  assert.equal(await readFile(path.join(shared,'mock-answer.txt'),'utf8'),r1.text);
- assert.ok((await (await fetch(s.base+'/')).text()).includes('AI Hub'),'static page opens without login');
+ assert.ok((await (await fetch(s.base+'/')).text()).includes('AI 오피스'),'static page opens without login');
  // envdump 모의 CLI: 자식에 HOME 이 사용자 home 으로 들어갔는지 (프롬프트 텍스트에 포함되어 돌아옴)
  const meta=JSON.parse(await readFile(path.join(s.dir,'data/users',String(s.admin.body.user.id),'runs',`${replies.find(m=>m.adapter==='mock2').id}-mock2`,'meta.json'),'utf8'));
  assert.equal(meta.adapter,'mock2');
