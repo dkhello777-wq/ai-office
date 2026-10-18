@@ -193,7 +193,7 @@ function budgetFor(ctx){
 const loginPublic=l=>l?{status:l.status,urls:l.urls??[],codes:l.codes??[],lastLine:l.lastLine??'',error:l.error??null,startedAt:l.startedAt,endedAt:l.endedAt??null,tail:l.tail??null,exitCode:l.exitCode??null}:null;
 async function statePayload(ctx){
   const memory=await readMemory(ctx);
-  return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream})),messages:ctx.store.state.messages,workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
+  return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,avatar:typeof a.avatar==='string'&&/^[\w.\-]+\.(png|jpg)$/.test(a.avatar)?a.avatar:null,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream})),messages:ctx.store.state.messages,workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
 }
 // 프롬프트 합성: (메모리) + (다른 AI 답변 전문) + 본문 + 첨부 안내. 원문을 요약하거나 자르지 않는다.
 // v0.8.5 방 대화 공유: 같은 방의 최근 메시지(사용자 + 다른 AI 의 완료된 답변)를 프롬프트 앞에 붙여, AI 끼리 서로의 말을 보고 이어 말할 수 있게 한다.

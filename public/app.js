@@ -14,6 +14,8 @@ const ad=id=>state.adapters.find(a=>a.id===id);
 const label=id=>ad(id)?.label??id;
 const color=id=>ad(id)?.color??'#888';
 const initial=a=>(a.label??a.id??'?').replace(/\s*\(.*\)/,'').trim()[0]?.toUpperCase()??'?';
+// v0.9.2 캐릭터 아바타: config 의 avatar 이미지가 있으면 그림, 못 불러오면 첫 글자로 (이미지가 사라지면 아래 글자가 보인다)
+const avHtml=(a,cls='')=>`<span class="av ${cls}" style="--ai-color:${esc(a.color??'#888')}" title="${esc(a.label??a.id)}">${esc(initial(a))}${a.avatar?`<img src="/${esc(a.avatar)}" alt="" onerror="this.remove()">`:''}</span>`;
 const connected=a=>a.auth?.state==='subscription';
 const ERR={setup_code_invalid:'설정 코드가 맞지 않습니다 — 서버 로그(또는 data/setup-code)의 코드를 넣으세요',persist_failed:'답은 받았지만 저장에 실패했습니다 (서버 디스크 확인)',interrupted:'서버가 재시작되어 중단됨',body_too_large:'요청이 너무 큽니다',login_required:'로그인이 필요합니다',login_invalid:'비밀번호가 맞지 않습니다',too_many_attempts:'실패가 많아 15분간 잠겼습니다',password_too_short:'비밀번호는 10자 이상',already_set:'이미 비밀번호가 있습니다',login_already_running:'이미 연결 진행 중',login_not_configured:'이 AI 는 화면 연결 명령이 아직 없습니다',budget_exceeded:'이번 달 토큰 상한에 도달 — 메뉴 > 토큰 예산에서 조정',workers_required:'팀원이 될 AI 가 더 연결돼야 합니다',lead_required:'팀장 AI 를 먼저 지정하세요',plan_parse_failed:'팀장이 계획을 JSON 으로 내지 않아 분배를 멈췄습니다',budget_invalid:'상한은 0 이상의 숫자',cancelled:'취소됨',text_too_long:'글자 수 상한 초과',file_too_large:'파일 크기 상한 초과',state_corrupt:'대화 저장 파일이 손상됨',state_unreadable:'대화 저장 파일을 읽을 수 없음',not_logged_in:'아직 연결되지 않음 — 참여자에서 연결하세요',api_key_auth_detected:'API 키 모드라 차단됨 (구독 로그인만 허용)',third_party_auth_detected:'서드파티 인증이라 차단됨',auth_unverified:'인증 상태를 확인할 수 없어 차단됨',cli_not_found:'CLI 가 서버에 설치돼 있지 않음',cli_timeout:'시간 초과',all_tasks_failed:'팀원 작업이 전부 실패해 종합을 건너뜀',stopped:'긴급 중지로 멈춤 — 다음 단계로 가지 않음',empty_result:'답변이 비어 있어 실패로 처리',sandbox_failed:'Codex 샌드박스가 컨테이너에서 못 떠 명령이 실행되지 않음'};
 const msg=e=>ERR[e]??e;
@@ -82,7 +84,9 @@ function aiHtml(m){
   const auth=m.status==='blocked'&&m.authCheck?`<details><summary>인증 확인</summary><pre>${esc(`${m.authCheck.state} (${m.authCheck.reason})${m.authCheck.subscriptionType?' / 구독 '+m.authCheck.subscriptionType:''}`)}</pre></details>`:'';
   const others=state.adapters.filter(x=>x.id!==m.adapter&&connected(x));
   const acts=m.status==='done'&&m.kind!=='plan'?`<div class="acts">${others.map(x=>`<button data-handoff="${m.id}" data-to="${x.id}">→ ${esc(x.label)} 검토</button>`).join('')}<button data-memo="${m.id}">🧠 기억</button><button data-save="${m.id}">💾 저장</button><button data-copy="${m.id}">복사</button></div>`:'';
-  return `<div class="m ai" id="m${m.id}" style="--ai-color:${esc(a.color)}"><div class="av">${esc(initial(a))}</div><div class="body"><div class="name">${esc(a.label)}</div><div class="bubble ${cls}">${kind}${m.kind==='plan'&&m.status==='done'?plan+body:body+plan}${auth||ev}</div>${acts}<div class="meta"><span>${timeOf(m.at)}</span>${m.status==='done'&&m.elapsedMs?`<span>${(m.elapsedMs/1000).toFixed(1)}s</span>`:''}${m.usage?`<span>${esc(usageShort(m.usage))}</span>`:''}</div></div></div>`;
+  const meta=`<span class="meta">${m.status==='done'&&m.elapsedMs?`<span>${(m.elapsedMs/1000).toFixed(1)}초</span>`:''}<span>${timeOf(m.at)}</span>${m.usage?`<span>${esc(usageShort(m.usage))}</span>`:''}</span>`;
+  // v0.9.2 하얀 도트: 아바타·이름·시간을 한 줄 머리로, 본문은 말풍선 없이 그 아래
+  return `<div class="m ai" id="m${m.id}" style="--ai-color:${esc(a.color)}"><div class="ai-head">${avHtml(a)}<span class="name">${esc(a.label)}</span>${meta}</div><div class="body"><div class="bubble ${cls}">${kind}${m.kind==='plan'&&m.status==='done'?plan+body:body+plan}${auth||ev}</div>${acts}</div></div>`;
 }
 function usageShort(u){const i=u.input??u.input_tokens??u.prompt_tokens,o=u.output??u.output_tokens??u.completion_tokens;return Number.isFinite(i)&&Number.isFinite(o)?`${i}+${o} 토큰`:'';}
 function renderTimeline(){
@@ -125,7 +129,7 @@ function scrollBottom(){const c=$('#chat');c.scrollTop=c.scrollHeight;}
 function renderHeader(){
   const on=state.adapters.filter(connected);
   $('#room-count').textContent=on.length+1;
-  $('#people-open').innerHTML=state.adapters.map(a=>`<span class="av ${connected(a)?'':'off'}" style="--ai-color:${esc(a.color)}" title="${esc(a.label)}">${esc(initial(a))}</span>`).join('')||'<span class="hint">참여자 없음</span>';
+  $('#people-open').innerHTML=state.adapters.map(a=>avHtml(a,connected(a)?'':'off')).join('')||'<span class="hint">참여자 없음</span>';
   const lead=ad(state.lead);
   $('#route-lead').textContent=lead?`팀장 ${lead.label}에게`:'팀장에게';
   $('#route-hint').textContent=route==='lead'?(lead?(on.filter(a=>a.id!==lead.id).length?`${lead.label}가 ${on.filter(a=>a.id!==lead.id).map(a=>a.label).join(', ')}에게 나눠 시킵니다`:`팀원이 없어 ${lead.label} 혼자 답합니다`):'참여자에서 팀장을 지정하세요'):(on.length?`${on.map(a=>a.label).join(', ')}에게 동시에`:'연결된 AI 가 없습니다');
@@ -147,7 +151,7 @@ function renderPeople(){
     const st=a.auth?.state;const isLead=state.lead===a.id;
     const status=!a.auth?`<span class="pstatus off">○ 확인 중<span class="dots"></span></span>`:st==='subscription'?`<span class="pstatus ok">● ${AUTH_KO[st]}${a.auth.subscriptionType?' · '+esc(a.auth.subscriptionType):''}</span>`:`<span class="pstatus ${st==='not_logged_in'?'off':'bad'}">○ ${AUTH_KO[st]??st}${a.auth.reason?` <small>(${esc(a.auth.reason)})</small>`:''}</span>`;
     const running=a.login?.status==='running';
-    return `<div class="person" data-id="${a.id}" style="--ai-color:${esc(a.color)}"><div class="av ${connected(a)?'':'off'}">${esc(initial(a))}</div><div class="info"><div class="pname">${esc(a.label)}${isLead?'<span class="lead-tag">팀장</span>':''}</div><div class="prole">${esc(a.roleHint||'')}</div>${status}<div class="pacts">${a.canLogin&&!running?`<button class="btn small primary p-login">${connected(a)?'다시 연결':'연결하기'}</button>`:''}${!a.canLogin?`<span class="hint small">이 AI 는 아직 화면 연결을 지원하지 않습니다</span>`:''}${connected(a)?`<button class="btn small p-lead">${isLead?'팀장 해제':'팀장으로'}</button><button class="btn small p-reset" title="이 AI 의 이어가기 세션을 새로 시작">새 대화</button>`:''}</div><div class="login-slot">${loginBoxHtml(a)}</div></div></div>`;
+    return `<div class="person" data-id="${a.id}" style="--ai-color:${esc(a.color)}">${avHtml(a,connected(a)?'':'off')}<div class="info"><div class="pname">${esc(a.label)}${isLead?'<span class="lead-tag">팀장</span>':''}</div><div class="prole">${esc(a.roleHint||'')}</div>${status}<div class="pacts">${a.canLogin&&!running?`<button class="btn small primary p-login">${connected(a)?'다시 연결':'연결하기'}</button>`:''}${!a.canLogin?`<span class="hint small">이 AI 는 아직 화면 연결을 지원하지 않습니다</span>`:''}${connected(a)?`<button class="btn small p-lead">${isLead?'팀장 해제':'팀장으로'}</button><button class="btn small p-reset" title="이 AI 의 이어가기 세션을 새로 시작">새 대화</button>`:''}</div><div class="login-slot">${loginBoxHtml(a)}</div></div></div>`;
   }).join('')||'<p class="hint">설정된 AI 가 없습니다 (config/adapters.json)</p>';
   list.querySelectorAll('.person').forEach(p=>{
     const id=p.dataset.id;
