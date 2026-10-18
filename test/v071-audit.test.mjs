@@ -229,4 +229,35 @@ test('V25: after SIGTERM the grace period is honoured for a grandchild even when
  const closed=new Promise(r=>p.once('close',r));terminateChild(p,1000);await closed;await new Promise(r=>setTimeout(r,400));
  assert.equal(await readFile(cleanup,'utf8'),'ok','grandchild finished its SIGTERM cleanup inside the grace');
 });
+test('V26: a malformed HUB_TRUSTED_PROXIES entry refuses to start instead of trusting everyone; empty prefix and /33 included',async t=>{
+ for(const bad of ['192.0.2.0/33','192.0.2.0/','not-an-ip','192.0.2.1,10.0.0.0/8,2001:db8::/129','192.0.2.0/ 24'])
+ {const s=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS,HUB_TRUST_PROXY:'1',HUB_TRUSTED_PROXIES:bad});t.after(()=>s.srv.kill());assert.equal(s.started,false,bad);assert.match(s.log(),/HUB_TRUSTED_PROXIES/);}
+ // 올바른 목록인데 peer(127.0.0.1)가 밖이면 헤더 무시 → https Origin 은 거부
+ const s=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS,HUB_TRUST_PROXY:'1',HUB_TRUSTED_PROXIES:'192.0.2.0/24'});t.after(()=>s.srv.kill());
+ const r=await s.call('/api/login',{method:'POST',headers:{'x-forwarded-proto':'https',origin:'https://127.0.0.1:'+s.port},body:JSON.stringify({password:PASS})});assert.equal(r.status,403);
+ assert.equal((await s.login()).status,200,'plain login still fine');
+});
+test('V27: IPv4-mapped and compressed IPv6 forms of the peer match the rule; embedded dotted IPv4 is compared exactly',async t=>{
+ const {buildTrusted}=await import('../src/trusted.mjs');
+ // 검수자의 표 그대로 + 자기 일치
+ const T=(rule,ip)=>buildTrusted(rule).check(ip);
+ assert.equal(T('::ffff:127.0.0.1/128','::ffff:127.0.0.1'),true);
+ assert.equal(T('::ffff:127.0.0.0/120','::ffff:127.0.0.1'),true);
+ assert.equal(T('127.0.0.1','::ffff:127.0.0.1'),true,'IPv4 rule matches the mapped form of the same peer');
+ assert.equal(T('127.0.0.0/8','::ffff:127.0.0.1'),true);
+ assert.equal(T('2001:db8::192.0.2.2/128','2001:db8::192.0.2.1'),false,'embedded dotted IPv4 compared exactly');
+ assert.equal(T('2001:db8::192.0.2.2/128','2001:db8::c000:202'),true,'dotted and hex forms are the same address');
+ assert.equal(T('2001:db8::/32','2001:0db8:0000:0000:0000:0000:0000:0001'),true,'compressed vs expanded');
+ assert.equal(T('10.0.0.0/8','not-an-ip'),false);
+ assert.equal(buildTrusted('').trustAll,true);assert.equal(buildTrusted('  ').trustAll,true);
+ for(const bad of ['192.0.2.0/33','192.0.2.0/','2001:db8::/129','x','192.0.2.0/24,oops','192.0.2.0//24'])assert.throws(()=>buildTrusted(bad),/trusted_proxy_invalid/,bad);
+ assert.doesNotThrow(()=>buildTrusted('0.0.0.0/0'),'explicit /0 is allowed');
+ // 실제 HTTP: 서버를 :: 에 띄우고 127.0.0.1 로 접속 (IPv6 없는 환경이면 건너뜀)
+ const net=await import('node:net');const can=await new Promise(r=>{const sv=net.createServer();sv.once('error',()=>r(false));sv.listen(0,'::',()=>{sv.close();r(true);});});
+ if(!can){t.diagnostic('IPv6 unavailable here; HTTP part skipped');return;}
+ for(const rule of ['127.0.0.1','::ffff:127.0.0.1/128','::ffff:127.0.0.0/120']){
+  const s=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS,HUB_TRUST_PROXY:'1',HUB_TRUSTED_PROXIES:rule,HOST:'::'});t.after(()=>s.srv.kill());
+  const r=await s.call('/api/login',{method:'POST',headers:{'x-forwarded-proto':'https',origin:'https://127.0.0.1:'+s.port},body:JSON.stringify({password:PASS})});assert.equal(r.status,200,rule);
+ }
+});
 test('cleanup',async()=>{await terminateAll(200);});

@@ -53,19 +53,20 @@ const currentUser=req=>owner.userForToken(cookies(req).hub);
 // 재검수 V24: 프록시 신뢰는 (1) HUB_TRUST_PROXY=1 이고 (2) 소켓 상대가 HUB_TRUSTED_PROXIES(콤마, IP 또는 CIDR; 비우면 모든 peer) 안에 있을 때만.
 // x-forwarded-for 는 오른쪽에서 왼쪽으로 읽어 신뢰 프록시가 아닌 첫 값을 쓴다 — 클라이언트가 앞에 붙인 값은 무시된다. IP 형식이 아니면 소켓 주소로 대체.
 import net from 'node:net';
+import {buildTrusted} from './trusted.mjs';
 const TRUST_PROXY=process.env.HUB_TRUST_PROXY==='1';
-const TRUSTED_PROXIES=(process.env.HUB_TRUSTED_PROXIES??'').split(',').map(s=>s.trim()).filter(Boolean).map(parseCidr).filter(Boolean);
-function parseCidr(s){const [ip,bits]=s.split('/');const fam=net.isIP(ip);if(!fam)return null;const b=bits===undefined?(fam===4?32:128):Number(bits);if(!Number.isInteger(b)||b<0||b>(fam===4?32:128))return null;return {ip:ipToBig(ip,fam),bits:b,fam};}
-function ipToBig(ip,fam=net.isIP(ip)){if(fam===4)return BigInt(ip.split('.').reduce((a,o)=>a*256+Number(o),0));const m=ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);if(m)return ipToBig(m[1],4);const [h,t]=ip.split('::');const hs=h?h.split(':'):[],ts=t?t.split(':'):[];const parts=[...hs,...Array(8-hs.length-ts.length).fill('0'),...ts];return parts.reduce((a,x)=>a*65536n+BigInt(parseInt(x||'0',16)),0n);}
-function inCidr(ip,c){const fam=net.isIP(ip);const normFam=/^::ffff:/i.test(ip)?4:fam;if(!normFam||normFam!==c.fam)return false;const width=c.fam===4?32:128;const shift=BigInt(width-c.bits);return (ipToBig(ip,fam)>>shift)===(c.ip>>shift);}
-const isTrustedPeer=ip=>!TRUSTED_PROXIES.length||TRUSTED_PROXIES.some(c=>inCidr(ip,c));
+// 재검수 V26·V27: 신뢰 목록은 Node 내장 net.BlockList 로 판정(IPv4-mapped IPv6, 압축 표기, embedded IPv4 모두 내장 처리).
+// "미설정"(모든 peer 신뢰)과 "설정했지만 잘못됨"을 분리한다: 항목 하나라도 틀리면 시작 거부 — 오타가 전체 신뢰로 바뀌지 않게.
+let TRUSTED;try{TRUSTED=buildTrusted(process.env.HUB_TRUSTED_PROXIES);}catch(e){console.error(`HUB_TRUSTED_PROXIES 항목이 잘못돼 시작하지 않습니다: "${e.entry}" (${e.why}). IP 또는 IP/prefix 를 콤마로.`);process.exit(2);}
+const TRUST_ALL_PEERS=TRUSTED.trustAll;
+const isTrustedPeer=ip=>TRUSTED.check(ip);
 const viaTrustedProxy=req=>TRUST_PROXY&&isTrustedPeer(String(req.socket.remoteAddress??''));
 const isSecure=req=>viaTrustedProxy(req)&&req.headers['x-forwarded-proto']==='https';
 function clientIp(req){
   const peer=String(req.socket.remoteAddress??'');
   if(!viaTrustedProxy(req))return peer;
   const hops=String(req.headers['x-forwarded-for']??'').split(',').map(s=>s.trim()).filter(Boolean);
-  for(let i=hops.length-1;i>=0;i--){const h=hops[i];if(!net.isIP(h))return peer;if(TRUSTED_PROXIES.length&&isTrustedPeer(h))continue;return h;}
+  for(let i=hops.length-1;i>=0;i--){const h=hops[i];if(!net.isIP(h))return peer;if(!TRUST_ALL_PEERS&&isTrustedPeer(h))continue;return h;}
   return peer;
 }
 const allowedHosts=new Set([...(config.allowedHosts??[]),...(process.env.HUB_ALLOWED_HOSTS?process.env.HUB_ALLOWED_HOSTS.split(','):[])].map(s=>s.trim()).filter(Boolean));
