@@ -55,19 +55,29 @@ export class Owner{
     // 존재하는 owner.json 은 완전해야 한다: salt 16B·hash 64B(base64), createdAt 날짜, authVersion 양의 정수. 선택 항목은 형식 검사.
     this.owner=new JsonFile(path.join(dataDir,'owner.json'),null,d=>{
       if(!b64Len(d.salt,SALT_BYTES)||!b64Len(d.hash,HASH_BYTES)||!isDate(d.createdAt))return false;
-      if(!Number.isSafeInteger(d.authVersion)||d.authVersion<1)return false;
+      // v0.7.0 파일은 authVersion 이 없다 (재검수 V22): "없음" 은 마이그레이션 대상, 있는데 잘못된 값은 손상
+      if(d.authVersion!==undefined&&(!Number.isSafeInteger(d.authVersion)||d.authVersion<1))return false;
       if(d.budget!==undefined&&d.budget!==null&&(!d.budget||typeof d.budget!=='object'||!validBudgetTokens(d.budget.monthlyTokens)))return false;
       if(d.lead!==undefined&&d.lead!==null&&typeof d.lead!=='string')return false;
       return true;
     });
     this.sessions=new JsonFile(path.join(dataDir,'sessions.json'),{sessions:{}},d=>{
       if(!d.sessions||typeof d.sessions!=='object'||Array.isArray(d.sessions))return false;
-      for(const [k,s] of Object.entries(d.sessions))if(!/^[0-9a-f]{64}$/.test(k)||!s||typeof s!=='object'||!isDate(s.createdAt)||!isDate(s.expiresAt)||!Number.isSafeInteger(s.v))return false;
+      for(const [k,s] of Object.entries(d.sessions))if(!/^[0-9a-f]{64}$/.test(k)||!s||typeof s!=='object'||!isDate(s.createdAt)||!isDate(s.expiresAt)||(s.v!==undefined&&!Number.isSafeInteger(s.v)))return false;   // v 없음 = v0.7.0 세션 → 로드 때 폐기
       return true;
     });
     this.failures=new Map();
   }
-  async load(){await this.owner.load();await this.sessions.load();this.pruneSessions();}
+  // 재검수 V22: 정상 v0.7.0 데이터를 그대로 받는다. owner 에 authVersion:1 을 원자적으로 저장하고(먼저), v 없는 옛 세션은 전부 폐기해 재로그인을 요구한다.
+  // owner 만 바뀌고 중단돼도 다음 시작에서 세션 쪽이 다시 정리되므로 어느 지점에서 끊겨도 재시작 가능.
+  async load(){
+    await this.owner.load();
+    if(this.owner.data&&this.owner.data.authVersion===undefined){this.owner.data={...this.owner.data,authVersion:1};await this.owner.save();this.migrated=(this.migrated??[]).concat('owner_auth_version');}
+    await this.sessions.load();
+    const s=this.sessions.data.sessions;const legacy=Object.keys(s).filter(k=>s[k].v===undefined);
+    if(legacy.length){for(const k of legacy)delete s[k];await this.sessions.save();this.migrated=(this.migrated??[]).concat(`sessions_dropped:${legacy.length}`);}
+    this.pruneSessions();
+  }
   get isSet(){return this.owner.exists&&!!this.owner.data;}
   get authVersion(){return this.owner.data?.authVersion??0;}
   // 고정 사용자 객체 (서버의 사용자 컨텍스트가 id 로 폴더를 만든다)
@@ -112,18 +122,24 @@ export class Owner{
     locks.set(key,chain);const cleanup=()=>{if(locks.get(key)===chain)locks.delete(key);};chain.then(cleanup,cleanup);
     return chain;
   }
+  // 재검수 V24 보완: 키(IP)를 아무리 바꿔도 전체 실패가 1분에 20회를 넘으면 1분간 모든 로그인을 거부한다 (무차별 대입 차단, 창은 1분뿐).
+  _globalGate(){const g=this._global??(this._global={count:0,windowStart:Date.now(),until:0});const now=Date.now();if(now-g.windowStart>60000){g.count=0;g.windowStart=now;}return g;}
   async _login({password,key}){
+    const g=this._globalGate();if(g.until>Date.now())return {error:'too_many_attempts'};
     const f=this.failures.get(key);
     if(f&&f.until>Date.now())return {error:'too_many_attempts'};
-    const ok=this.isSet&&typeof password==='string'&&password.length<=PASSWORD_MAX&&await verifyPassword(password,this.owner.data);
+    // 재검수 V23: 검증 시작 시점의 해시·버전을 잡아 두고, scrypt 가 끝났을 때 바뀌어 있으면(그 사이 비밀번호 변경) 발급하지 않는다.
+    const rec=this.owner.data,version=this.authVersion;
+    const ok=this.isSet&&typeof password==='string'&&password.length<=PASSWORD_MAX&&await verifyPassword(password,rec)&&this.owner.data===rec&&this.authVersion===version;
     if(!ok){
       const cur=this.failures.get(key);const n=(cur&&Date.now()-cur.lastAt<15*60*1000?cur.count:0)+1;
       this.failures.set(key,{count:n,lastAt:Date.now(),until:n>=10?Date.now()+15*60*1000:0});
+      g.count++;if(g.count>=20)g.until=Date.now()+60*1000;
       return {error:'login_invalid'};
     }
     this.failures.delete(key);
     const token=randomBytes(32).toString('base64url');
-    this.sessions.data.sessions[sha256(token)]={createdAt:new Date().toISOString(),expiresAt:new Date(Date.now()+SESSION_TTL_MS).toISOString(),v:this.authVersion};
+    this.sessions.data.sessions[sha256(token)]={createdAt:new Date().toISOString(),expiresAt:new Date(Date.now()+SESSION_TTL_MS).toISOString(),v:version};
     await this.sessions.save();
     return {token,user:this.publicUser()};
   }

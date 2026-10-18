@@ -1,4 +1,4 @@
-# AI 오피스 v0.7.1 — 구독 중인 AI 들을 단톡방 하나에서 (1인용 · 클라우드)
+# AI 오피스 v0.7.2 — 구독 중인 AI 들을 단톡방 하나에서 (1인용 · 클라우드)
 
 내 서버 한 대에 띄워 두고, 폰·PC 브라우저로 접속해 **내가 구독 중인 AI 들과 단톡방처럼** 대화합니다. 참여자는 내가 연결한 AI 수만큼: Claude 만 있으면 1:1, ChatGPT(Codex) 까지 연결하면 3인 방.
 
@@ -18,8 +18,9 @@ v0.6 의 다인용(계정·초대·관리자)은 뺐습니다. 서버 = 사무�
    - `HUB_PASSWORD` = 들어올 때 쓸 비밀번호 (10~256자). 잘못된 값이면 서버가 시작하지 않습니다.
    - 안 넣으면 서버 로그에 **1회용 설정 코드**가 찍힙니다. 첫 화면 "AI 오피스 만들기"에 그 코드 + 비밀번호를 넣어야 주인이 됩니다 (코드 없이는 아무도 못 만듭니다).
    - (선택) `HUB_MONTHLY_TOKENS` 월 토큰 상한. 화면 메뉴에서 정해도 됩니다.
-4. **Volume** 추가: mount path `/app/data`. ⚠️ 이게 없으면 재배포 때마다 AI 로그인·대화가 날아갑니다.
-5. Settings → Networking → **Generate Domain**. 그 주소를 폰에서 열면 끝. "홈 화면에 추가" 하면 앱처럼 열립니다.
+4. Railway 는 프록시 뒤라 `HUB_TRUST_PROXY=1` 을 추가 (로그인 잠금이 접속자별로, 쿠키 Secure). 플랫폼 프록시 IP 를 알면 `HUB_TRUSTED_PROXIES` 에도.
+5. **Volume** 추가: mount path `/app/data`. ⚠️ 이게 없으면 재배포 때마다 AI 로그인·대화가 날아갑니다.
+6. Settings → Networking → **Generate Domain**. 그 주소를 폰에서 열면 끝. "홈 화면에 추가" 하면 앱처럼 열립니다.
 
 다른 Docker 호스트(Hetzner, Fly, 집 NAS 등)도 같습니다: `docker build -t ai-office . && docker run -p 8787:8787 -v office-data:/app/data -e HUB_PASSWORD=... ai-office`.
 
@@ -62,7 +63,8 @@ v0.6 의 다인용(계정·초대·관리자)은 뺐습니다. 서버 = 사무�
 | `HUB_MONTHLY_TOKENS` | 월 토큰 상한 (0 이상 정수) | 0 = 무제한 |
 | `PORT` / `HOST` | 수신 포트·주소 | Docker: 8787 / 0.0.0.0 |
 | `HUB_ALLOWED_HOSTS` | Host 허용 목록(콤마) 또는 `*` | Docker: `*` |
-| `HUB_TRUST_PROXY` | `1` 이면 x-forwarded-for/proto 를 믿음 (플랫폼 프록시 뒤에서만) | Docker: `1` |
+| `HUB_TRUST_PROXY` | `1` 이면 x-forwarded-for/proto 를 믿음. **프록시 뒤에서만** 켜고, 직접 노출된 서버에선 끔 | Docker: `0` |
+| `HUB_TRUSTED_PROXIES` | 신뢰할 프록시 IP/CIDR 목록(콤마). 있으면 소켓 상대가 이 안에 있을 때만 헤더를 믿고, XFF 는 오른쪽부터 이 목록에 없는 첫 값을 씀 | 비움 = 모든 peer (프록시가 직접 노출을 막는 플랫폼에서만) |
 
 `config/adapters.json`: AI 목록·명령·파서·역할 한 줄(`roleHint`). 새 AI 는 항목 하나 추가.
 
@@ -105,6 +107,15 @@ npm start         # http://127.0.0.1:8787
 | V21 | Node 22.22.0, claude-code 2.1.302, codex 0.163.0, gemini-cli 0.64.0 고정 |
 
 **검수가 지적했지만 코드로 못 닫은 것**: 실제 Claude/Codex 의 비 TTY 로그인 완주, Railway 프록시 뒤 SSE, 재배포 후 2턴 이어가기는 실제 배포에서만 확인 가능 (테스트 가이드 2·3단계). TTY 가 꼭 필요하면 PTY 중계(`node-pty`)를 v0.8 에서.
+
+### v0.7.1 → v0.7.2 (재검수 V22~V25)
+
+| ID | 고친 것 |
+| --- | --- |
+| V22 | v0.7.0 데이터 마이그레이션: `authVersion` 없는 owner.json 은 1 을 붙여 원자적으로 저장, `v` 없는 옛 세션은 폐기(재로그인). 어느 지점에서 끊겨도 재시작 가능 |
+| V23 | 로그인은 검증 시작 시점의 해시·버전을 잡고, 끝났을 때 바뀌어 있으면 거부. 세션은 잡아 둔 버전으로 발급 → 변경 전 발급된 세션도 커밋 즉시 무효 |
+| V24 | `HUB_TRUST_PROXY` 기본 0. `HUB_TRUSTED_PROXIES` 로 신뢰 peer 제한, XFF 는 오른쪽부터 읽어 클라이언트가 앞에 붙인 값 무시, IP 형식 검증. 키를 돌려도 전체 실패 20회/분 뒤 1분간 전부 429 |
+| V25 | SIGTERM 뒤 유예 중인 그룹은 close 가 와도 예약된 SIGKILL 시점을 지킴 (손자의 정리 시간 보장). 정상 종료 뒤 잔존 프로세스 즉시 정리는 유지 |
 
 ## 8. 아직 없는 것 (v0.8 후보)
 

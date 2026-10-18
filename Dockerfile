@@ -23,7 +23,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 ENV HOST=0.0.0.0 \
     PORT=8787 \
     HUB_ALLOWED_HOSTS=* \
-    HUB_TRUST_PROXY=1 \
+    HUB_TRUST_PROXY=0 \
     NODE_ENV=production \
     HOME=/home/office
 VOLUME ["/app/data"]

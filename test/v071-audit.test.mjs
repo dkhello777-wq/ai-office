@@ -174,4 +174,59 @@ test('V20: mentions need a leading boundary and an exact alias (emails and scope
  assert.deepEqual(p('메일: user@claude.com'),[]);assert.deepEqual(p('문서: @google-cloud/storage'),[]);assert.deepEqual(p('일반 인용: @클라우드 비용'),[]);
  assert.deepEqual(p('@클로드 이거 봐줘'),['claude']);assert.deepEqual(p('오늘 @코덱스에게 리뷰 맡김'),['codex']);assert.deepEqual(p('@chatgpt 와 @gemini 둘 다'),['codex','gemini']);
 });
+// ---- 재검수 V22~V25 ----
+test('V22: v0.7.0 data (no authVersion, sessions without v) is migrated: owner kept, old sessions dropped, login works',async t=>{
+ const d=await tmp();
+ // v0.7.0 과 같은 형식: authVersion 없음, 세션에 v 없음 (해시 알고리즘은 동일)
+ const o=new Owner(d);await o.load();await o.setup({password:PASS});const tok=(await o.login({password:PASS,key:'k'})).token;
+ const of=JSON.parse(await readFile(path.join(d,'owner.json'),'utf8'));delete of.authVersion;await writeFile(path.join(d,'owner.json'),JSON.stringify(of));
+ const sf=JSON.parse(await readFile(path.join(d,'sessions.json'),'utf8'));for(const v of Object.values(sf.sessions))delete v.v;await writeFile(path.join(d,'sessions.json'),JSON.stringify(sf));
+ const m=new Owner(d);await m.load();
+ assert.equal(m.authVersion,1);assert.deepEqual(m.migrated,['owner_auth_version','sessions_dropped:1']);
+ assert.equal(m.userForToken(tok),null,'legacy session requires re-login');
+ assert.ok((await m.login({password:PASS,key:'k'})).token,'old password still works');
+ const again=new Owner(d);await again.load();assert.equal(again.migrated,undefined,'migration is one-time');
+ // 서버도 그 데이터로 뜬다
+ const s=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription'});t.after(()=>s.srv.kill());s.srv.kill();await new Promise(r=>setTimeout(r,200));
+ await mkdir(path.join(s.dir,'data'),{recursive:true});await writeFile(path.join(s.dir,'data/owner.json'),JSON.stringify(of));await writeFile(path.join(s.dir,'data/sessions.json'),JSON.stringify(sf));
+ const port=20787+Math.floor(Math.random()*2000);const srv2=spawn('node',['src/server.mjs'],{cwd:s.dir,env:{PATH:process.env.PATH,HOME:process.env.HOME,PORT:String(port),MOCK_AUTH:'subscription'},stdio:['ignore','pipe','pipe']});t.after(()=>srv2.kill());
+ const up=await new Promise(r=>{srv2.stdout.on('data',d=>{if(String(d).includes('AI Hub'))r(true);});srv2.on('exit',()=>r(false));});assert.equal(up,true,'server starts on legacy data');
+ const base=`http://127.0.0.1:${port}`;assert.equal((await fetch(base+'/api/login',{method:'POST',headers:{'content-type':'application/json',origin:base},body:JSON.stringify({password:PASS})})).status,200);
+});
+test('V23: a login whose scrypt started before a password change cannot be issued a session afterwards',async()=>{
+ const d=await tmp();const o=new Owner(d);await o.load();await o.setup({password:PASS});
+ const hooks=await import('node:async_hooks');let count=0,loginP;const started=new Promise(r=>{const h=hooks.createHook({init(_id,type){if(type!=='SCRYPTREQUEST')return;if(++count===2){loginP=o.login({password:PASS,key:'inflight'});r();}}});h.enable();});
+ const change=o.changePassword({current:PASS,next:'brand new password 2'});await started;await change;const l=await loginP;
+ assert.equal(count>=2,true,'hook observed the second scrypt');assert.equal(o.authVersion,2);
+ // 두 결말만 허용: (a) 변경이 먼저 커밋돼 발급 거부, (b) 변경 전에 발급됐지만 v=1 이라 커밋 즉시 무효. 어느 쪽이든 옛 비밀번호로 "변경 후에도 유효한" 세션은 없다.
+ if(l.token){assert.equal(o.userForToken(l.token),null,'session issued before the commit is dead after it');const r=new Owner(d);await r.load();assert.equal(r.userForToken(l.token),null);}
+ else assert.equal(l.error,'login_invalid');
+ assert.ok((await o.login({password:'brand new password 2',key:'x'})).token);
+});
+test('V24: forged X-Forwarded-For from an untrusted peer is ignored; client-prepended hops are skipped; rotating keys hits the global gate',async t=>{
+ // 신뢰 프록시 목록이 있고 소켓 상대(127.0.0.1)가 그 안에 없으면 헤더는 무시된다 → 같은 키 → 11번째는 429
+ const u=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS,HUB_TRUST_PROXY:'1',HUB_TRUSTED_PROXIES:'10.0.0.0/8'});t.after(()=>u.srv.kill());
+ for(let i=0;i<10;i++)await u.login('wrong password!!',{'x-forwarded-for':`198.51.100.${i}`});
+ assert.equal((await u.login(PASS,{'x-forwarded-for':'198.51.100.99'})).status,429);
+ // 소켓 상대가 신뢰 범위(127.0.0.0/8)면 오른쪽부터 읽어 첫 비신뢰 값이 키: 클라이언트가 앞에 붙인 값은 무시
+ const s=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS,HUB_TRUST_PROXY:'1',HUB_TRUSTED_PROXIES:'127.0.0.0/8,10.0.0.0/8'});t.after(()=>s.srv.kill());
+ for(let i=0;i<10;i++)await s.login('wrong password!!',{'x-forwarded-for':`fake${i}, 203.0.113.5, 10.0.0.2`});
+ assert.equal((await s.login(PASS,{'x-forwarded-for':'other, 203.0.113.5, 10.0.0.2'})).status,429,'real client 203.0.113.5 locked regardless of prepended junk');
+ assert.equal((await s.login(PASS,{'x-forwarded-for':'203.0.113.6, 10.0.0.2'})).status,200,'another real client fine');
+ assert.equal((await s.login('wrong password!!',{'x-forwarded-for':'not-an-ip'})).status,401);
+ // 직접 노출(HUB_TRUST_PROXY=1, 목록 없음)에서 키를 돌려도 전체 실패 20회/분 뒤엔 모두 429
+ const g=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS,HUB_TRUST_PROXY:'1'});t.after(()=>g.srv.kill());
+ const codes=[];for(let i=0;i<30;i++)codes.push((await g.login('wrong password!!',{'x-forwarded-for':`198.51.100.${i}`})).status);
+ assert.ok(codes.slice(0,20).every(c=>c===401)&&codes.slice(20).every(c=>c===429),codes.join(','));
+});
+test('V25: after SIGTERM the grace period is honoured for a grandchild even when the parent exits first; a normally exiting parent still kills leftovers',async()=>{
+ const {spawnChild,terminateChild}=await import('../src/adapters/index.mjs');
+ const d=await tmp();const ready=path.join(d,'ready'),cleanup=path.join(d,'cleanup');
+ await writeFile(path.join(d,'bg.mjs'),`import {writeFileSync} from 'node:fs';process.on('SIGTERM',()=>setTimeout(()=>{writeFileSync(${JSON.stringify(cleanup)},'ok');process.exit(0);},250));writeFileSync(${JSON.stringify(ready)},'1');setInterval(()=>{},1000);`);
+ await writeFile(path.join(d,'parent.mjs'),`import {spawn} from 'node:child_process';spawn(process.execPath,[${JSON.stringify(path.join(d,'bg.mjs'))}],{stdio:'ignore'});setInterval(()=>{},1000);`);
+ const p=spawnChild('node',[path.join(d,'parent.mjs')],{cwd:d,env:{PATH:process.env.PATH},stdio:['ignore','pipe','pipe']});
+ for(let i=0;i<100;i++){try{await readFile(ready);break;}catch{await new Promise(r=>setTimeout(r,10));}}
+ const closed=new Promise(r=>p.once('close',r));terminateChild(p,1000);await closed;await new Promise(r=>setTimeout(r,400));
+ assert.equal(await readFile(cleanup,'utf8'),'ok','grandchild finished its SIGTERM cleanup inside the grace');
+});
 test('cleanup',async()=>{await terminateAll(200);});

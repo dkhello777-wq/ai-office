@@ -50,9 +50,24 @@ const require_same=(a,b)=>{const x=Buffer.from(a),y=Buffer.from(b);return x.leng
 const cookies=req=>Object.fromEntries((req.headers.cookie??'').split(';').map(s=>s.trim().split('=')).filter(([k])=>k));
 const currentUser=req=>owner.userForToken(cookies(req).hub);
 // 검수 V04·V05: 프록시 헤더(x-forwarded-proto / x-forwarded-for)는 HUB_TRUST_PROXY=1 일 때만 믿는다 (Docker 기본값 1 — 플랫폼 프록시 뒤). 아니면 소켓 값만.
+// 재검수 V24: 프록시 신뢰는 (1) HUB_TRUST_PROXY=1 이고 (2) 소켓 상대가 HUB_TRUSTED_PROXIES(콤마, IP 또는 CIDR; 비우면 모든 peer) 안에 있을 때만.
+// x-forwarded-for 는 오른쪽에서 왼쪽으로 읽어 신뢰 프록시가 아닌 첫 값을 쓴다 — 클라이언트가 앞에 붙인 값은 무시된다. IP 형식이 아니면 소켓 주소로 대체.
+import net from 'node:net';
 const TRUST_PROXY=process.env.HUB_TRUST_PROXY==='1';
-const isSecure=req=>TRUST_PROXY&&req.headers['x-forwarded-proto']==='https';
-const clientIp=req=>{if(TRUST_PROXY){const xff=String(req.headers['x-forwarded-for']??'').split(',')[0].trim();if(xff)return xff;}return String(req.socket.remoteAddress??'');};
+const TRUSTED_PROXIES=(process.env.HUB_TRUSTED_PROXIES??'').split(',').map(s=>s.trim()).filter(Boolean).map(parseCidr).filter(Boolean);
+function parseCidr(s){const [ip,bits]=s.split('/');const fam=net.isIP(ip);if(!fam)return null;const b=bits===undefined?(fam===4?32:128):Number(bits);if(!Number.isInteger(b)||b<0||b>(fam===4?32:128))return null;return {ip:ipToBig(ip,fam),bits:b,fam};}
+function ipToBig(ip,fam=net.isIP(ip)){if(fam===4)return BigInt(ip.split('.').reduce((a,o)=>a*256+Number(o),0));const m=ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);if(m)return ipToBig(m[1],4);const [h,t]=ip.split('::');const hs=h?h.split(':'):[],ts=t?t.split(':'):[];const parts=[...hs,...Array(8-hs.length-ts.length).fill('0'),...ts];return parts.reduce((a,x)=>a*65536n+BigInt(parseInt(x||'0',16)),0n);}
+function inCidr(ip,c){const fam=net.isIP(ip);const normFam=/^::ffff:/i.test(ip)?4:fam;if(!normFam||normFam!==c.fam)return false;const width=c.fam===4?32:128;const shift=BigInt(width-c.bits);return (ipToBig(ip,fam)>>shift)===(c.ip>>shift);}
+const isTrustedPeer=ip=>!TRUSTED_PROXIES.length||TRUSTED_PROXIES.some(c=>inCidr(ip,c));
+const viaTrustedProxy=req=>TRUST_PROXY&&isTrustedPeer(String(req.socket.remoteAddress??''));
+const isSecure=req=>viaTrustedProxy(req)&&req.headers['x-forwarded-proto']==='https';
+function clientIp(req){
+  const peer=String(req.socket.remoteAddress??'');
+  if(!viaTrustedProxy(req))return peer;
+  const hops=String(req.headers['x-forwarded-for']??'').split(',').map(s=>s.trim()).filter(Boolean);
+  for(let i=hops.length-1;i>=0;i--){const h=hops[i];if(!net.isIP(h))return peer;if(TRUSTED_PROXIES.length&&isTrustedPeer(h))continue;return h;}
+  return peer;
+}
 const allowedHosts=new Set([...(config.allowedHosts??[]),...(process.env.HUB_ALLOWED_HOSTS?process.env.HUB_ALLOWED_HOSTS.split(','):[])].map(s=>s.trim()).filter(Boolean));
 // 변경 요청(POST)은 Host 허용 목록 + Origin 일치 + JSON 형식까지 확인한 뒤에만 처리한다.
 // 클라우드 배포(HUB_ALLOWED_HOSTS=*)에서는 Host 목록 검사를 끄고 Origin 일치(CSRF 방어)만 본다 — 도메인이 플랫폼이 정해 주는 값이라 미리 알 수 없기 때문.

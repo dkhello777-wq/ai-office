@@ -80,7 +80,8 @@ export function spawnChild(command,args,opts){
   const child=spawn(command,args,{...opts,detached:GROUP});
   live.add(child);
   // 검수 V12: 직접 자식이 정상 종료해도 같은 그룹의 손자가 남을 수 있다. 한 번 실행하는 CLI 에서 자식보다 오래 살 정당한 프로세스는 없으므로, close 뒤 잠시 후 그룹 전체에 SIGKILL (없으면 ESRCH, 무해).
-  child.once('close',()=>{live.delete(child);if(GROUP&&child.pid&&!child._killed){try{process.kill(-child.pid,'SIGKILL');}catch{}}});
+  child.once('close',()=>{live.delete(child);if(pending.has(child))return;   // 재검수 V25: SIGTERM 뒤 유예 중이면 예약된 SIGKILL 시점을 지킨다 (손자의 정리 시간 보장)
+    if(GROUP&&child.pid&&!child._killed){try{process.kill(-child.pid,'SIGKILL');}catch{}}});
   // exit 뒤 500ms 안에 close 가 없으면(손자가 stdout 을 잡고 있음) 파이프를 끊는다
   child.once('exit',()=>{const t=setTimeout(()=>{for(const st of [child.stdout,child.stderr])try{st?.destroy();}catch{}},500);t.unref?.();child.once('close',()=>clearTimeout(t));});
   return child;
