@@ -56,6 +56,13 @@ code{background:rgba(0,0,0,.08);padding:1px 5px;border-radius:4px;font-size:.92e
 .bubble{background:var(--ai);color:var(--ink);padding:9px 12px;border-radius:16px;border-top-left-radius:4px;white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;box-shadow:0 1px 1px rgba(0,0,0,.06)}
 .m.me .bubble{background:var(--me);color:var(--me-ink);border-radius:16px;border-top-right-radius:4px}
 .m.ai .bubble{border-left:3px solid var(--ai-color)}
+/* v0.8.9 긴 글 접기: 7줄만 보이고 아래를 흐리게, 버튼으로 펼침 */
+.bubble .clip{line-height:1.45;max-height:calc(1.45em * 7);overflow:hidden;position:relative}
+.bubble .clip::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2.2em;background:linear-gradient(to bottom,transparent,var(--ai));pointer-events:none}
+.m.me .bubble .clip::after{background:linear-gradient(to bottom,transparent,var(--me))}
+.bubble .clip.open{max-height:none}.bubble .clip.open::after{display:none}
+.clip-btn{display:block;margin-top:4px;padding:2px 0;border:0;background:none;color:var(--accent);font-size:12.5px;font-weight:600;cursor:pointer}
+.m.me .clip-btn{color:var(--me-ink);opacity:.7}
 .bubble.running{color:var(--mute)}
 .bubble.blocked,.bubble.error{border-left-color:var(--bad)}
 .bubble .approval{margin:-2px 0 8px;padding:6px 8px;border:1px solid var(--warn);border-left-width:3px;border-radius:6px;font-size:12.5px;color:var(--warn);background:rgba(217,140,0,.08)}   /* v0.8.7 [승인 요청] */

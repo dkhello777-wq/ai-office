@@ -49,20 +49,29 @@ $('#gate-form').onsubmit=async e=>{
 const KIND={plan:'① 계획',task:'② 작업',final:'③ 종합'};
 const timeOf=iso=>new Date(iso).toLocaleTimeString('ko-KR',{hour:'numeric',minute:'2-digit'});
 const dayOf=iso=>new Date(iso).toLocaleDateString('ko-KR',{year:'numeric',month:'long',day:'numeric',weekday:'short'});
+// v0.8.9 긴 글 접기: 7줄(또는 700자) 넘는 말풍선은 처음 7줄만 보이고 "전체 보기" 로 펼친다. 본문은 그대로 다 들어 있고(복사·저장·검토도 전문), 화면 표시만 접는다.
+// 펼친 말풍선은 expanded 에 기억해 스트리밍·새 메시지로 다시 그려도 펼친 채로 둔다.
+const CLIP_LINES=7,CLIP_CHARS=700;const expanded=new Set();
+function clip(id,text,html){
+  const t=String(text??'');const lines=t.split('\n').length;
+  if(lines<=CLIP_LINES&&t.length<=CLIP_CHARS)return html;
+  const open=expanded.has(id);
+  return `<div class="clip${open?' open':''}">${html}</div><button class="clip-btn" data-clip="${id}">${open?'▲ 접기':`▼ 전체 보기 · ${lines}줄`}</button>`;
+}
 function userHtml(m){
   const all=state.adapters.filter(connected).map(a=>a.id);
   const chips=m.mode==='orchestrate'?`<span class="chip-s">팀장 ${esc(label(m.lead))} → ${(m.workers??[]).map(label).map(esc).join(', ')}</span>`
     :(m.targets??[]).length&&!(m.targets.length===all.length&&m.targets.every(t=>all.includes(t)))?`<span class="chip-s">→ ${m.targets.map(label).map(esc).join(', ')}</span>`:'';
   const files=(m.files??[]).map(f=>`<span class="chip-s">📎 ${esc(f)}</span>`).join('');
   const hand=m.handoffFrom?`<span class="chip-s">↪ #${m.handoffFrom} 답변 포함</span>`:'';
-  return `<div class="m me" id="m${m.id}"><div class="body"><div class="bubble">${esc(m.text)}</div>${chips||files||hand?`<div class="chips" style="justify-content:flex-end">${chips}${files}${hand}</div>`:''}<div class="meta"><span>${timeOf(m.at)}</span></div></div></div>`;
+  return `<div class="m me" id="m${m.id}"><div class="body"><div class="bubble">${clip(m.id,m.text,esc(m.text))}</div>${chips||files||hand?`<div class="chips" style="justify-content:flex-end">${chips}${files}${hand}</div>`:''}<div class="meta"><span>${timeOf(m.at)}</span></div></div></div>`;
 }
 function aiHtml(m){
   const a=ad(m.adapter)??{id:m.adapter,label:m.adapter,color:'#888'};
   const p=m.status==='running'?partials[m.id]:null;
   let body='',cls=m.status;
   if(m.status==='running')body=p?.partial?`<span class="partial">${esc(p.partial)}</span><div class="progress">수신 중 … ${(p.bytes/1024).toFixed(1)}KB · ${(p.elapsedMs/1000).toFixed(0)}s</div>`:`<span class="dots">${m.kind==='plan'?'계획 세우는 중':m.kind==='final'?'종합하는 중':'생각 중'}</span>`;
-  else if(m.status==='done')body=(m.approvalRequested?`<div class="approval">✋ 승인 요청 — 이 AI 가 삭제나 과금이 필요한 일 앞에서 멈췄습니다. 내용을 읽고 허락하려면 답장으로 "진행해" 라고 보내세요.</div>`:'')+(m.kind==='plan'?`<details class="raw"><summary>계획 원문(JSON)</summary><pre>${esc(m.text)}</pre></details>`:esc(m.text));   // 팀장의 계획 JSON 은 접어 둔다 — 화면에는 분배 요약만, 답은 ③ 종합 말풍선에. v0.8.7: [승인 요청] 답변은 띠로 강조
+  else if(m.status==='done')body=(m.approvalRequested?`<div class="approval">✋ 승인 요청 — 이 AI 가 삭제나 과금이 필요한 일 앞에서 멈췄습니다. 내용을 읽고 허락하려면 답장으로 "진행해" 라고 보내세요.</div>`:'')+(m.kind==='plan'?`<details class="raw"><summary>계획 원문(JSON)</summary><pre>${esc(m.text)}</pre></details>`:clip(m.id,m.text,esc(m.text)));   // 팀장의 계획 JSON 은 접어 둔다 — 화면에는 분배 요약만, 답은 ③ 종합 말풍선에. v0.8.7: [승인 요청] 답변은 띠로 강조
   else if(m.status==='blocked')body=`🚫 ${esc(msg(m.error))}`;
   else if(m.status==='cancelled')body='⏹ 중지됨 — 긴급 중지로 끊김'+(m.text?'\n\n'+esc(m.text):'');
   else body=`⚠️ 오류: ${esc(msg(m.error))}${m.text?'\n\n'+esc(m.text):''}${m.stderrTail?`<details open><summary>CLI 오류 출력</summary><pre>${esc(m.stderrTail)}</pre></details>`:''}`;
@@ -86,6 +95,7 @@ function renderTimeline(){
   tl.innerHTML=html;
   $('#stop').hidden=!state.messages.some(m=>m.status==='running');   // v0.8.8: 돌고 있는 AI 가 있을 때만 긴급 중지 버튼
   if(atBottom)chat.scrollTop=chat.scrollHeight;
+  tl.querySelectorAll('[data-clip]').forEach(b=>b.onclick=()=>{const id=Number(b.dataset.clip);const was=expanded.has(id);was?expanded.delete(id):expanded.add(id);renderTimeline();if(was)document.getElementById('m'+id)?.scrollIntoView({block:'nearest'});});
   tl.querySelectorAll('[data-handoff]').forEach(b=>b.onclick=()=>handoff(Number(b.dataset.handoff),b.dataset.to));
   tl.querySelectorAll('[data-save]').forEach(b=>b.onclick=async()=>{const name=prompt('저장할 파일 이름',`answer-${b.dataset.save}.md`);if(name){await api('/api/save',{method:'POST',body:JSON.stringify({messageId:Number(b.dataset.save),name})});toast('파일로 저장됨');}});
   tl.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{navigator.clipboard.writeText(state.messages.find(m=>m.id===Number(b.dataset.copy))?.text??'');toast('복사됨');});
