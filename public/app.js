@@ -181,7 +181,8 @@ async function handoff(messageId,to){
   await api('/api/send',{method:'POST',body:JSON.stringify({text:note,targets:[to],files:[...attached],handoffFrom:messageId})});scrollBottom();
 }
 $('#send').onclick=send;
-$('#text').addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key==='Enter')send();});
+// v0.8.6: Enter = 전송, Shift+Enter = 줄바꿈 (Ctrl/Cmd+Enter 도 전송). 한글 IME 조합 중(isComposing)의 Enter 는 무시해 마지막 글자가 두 번 들어가거나 조합이 끊기지 않게.
+$('#text').addEventListener('keydown',e=>{if(e.key!=='Enter'||e.isComposing||e.keyCode===229)return;if(e.shiftKey)return;e.preventDefault();send();});
 function autosize(){const t=$('#text');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,140)+'px';}
 $('#text').addEventListener('input',autosize);
 $('#route-all').onclick=()=>{route='all';$('#route-all').classList.add('on');$('#route-lead').classList.remove('on');renderHeader();};
