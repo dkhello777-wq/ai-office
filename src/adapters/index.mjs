@@ -290,7 +290,11 @@ const CODE_RE=/\b[A-Z0-9]{4,5}-[A-Z0-9]{4,5}\b/g;
 // OAuth authorize URL 의 code_challenge·state 같은 정상 파라미터는 로그인에 필요하므로 그대로 둔다.
 const TOKEN_QUERY_RE=/[?&](access_token|refresh_token|id_token|token|api_key|apikey|secret)=/i;
 export function sanitizeLoginUrl(u){const noFrag=u.split('#')[0];if(TOKEN_QUERY_RE.test(noFrag))return null;return noFrag;}
-export function extractLoginHints(text){
+// V28 (실배포에서 발견): Codex 는 URL 뒤에 ANSI 색상 코드(\x1b[0m 등)를 붙여 출력한다. 제거하지 않으면 URL 에 섞여 들어가 주소가 깨진다.
+const ANSI_RE=/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
+export const stripAnsi=s=>String(s??'').replace(ANSI_RE,'');
+export function extractLoginHints(raw){
+  const text=stripAnsi(raw);
   const urls=[...new Set((text.match(URL_RE)??[]).map(u=>sanitizeLoginUrl(u.replace(/[.,;]+$/,''))).filter(Boolean))];
   const codes=[...new Set(text.match(CODE_RE)??[])];
   return {urls,codes};
@@ -298,7 +302,7 @@ export function extractLoginHints(text){
 // 진행 표시용 마지막 줄은 비밀값처럼 보이는 것을 가린 뒤에만 화면으로 보낸다 (검수 FAIL 4). 원문은 증거 파일에만.
 // 가리는 것: key=value / key: value 꼴의 토큰·시크릿(access_token 처럼 밑줄이 붙은 이름 포함), Bearer, JWT, 32자 이상 난수 덩어리, URL 의 ?쿼리와 #프래그먼트.
 export function maskLine(line){
-  return String(line??'')
+  return stripAnsi(line)
     .replace(/\b([a-z0-9_-]*?(?:token|secret|password|passwd|api[_-]?key|authorization|cookie|session)[a-z0-9_-]*)\b(\s*[=:]\s*)(?:Bearer\s+)?\S+/gi,(_,k,sep)=>k+sep+'[가림]')
     .replace(/\bBearer\s+\S+/gi,'Bearer [가림]')
     .replace(/(https?:\/\/[^\s?#'"<>]+)([?#])[^\s'"<>]*/g,'$1$2[가림]')

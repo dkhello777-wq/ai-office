@@ -7,7 +7,7 @@ import {mkdtemp,writeFile,readFile,mkdir,rm} from 'node:fs/promises';
 import os from 'node:os';import path from 'node:path';
 import {Owner,validBudgetTokens} from '../src/owner.mjs';
 import {Store,normalizeUsage} from '../src/store.mjs';
-import {runAdapter,checkAuth,extractLoginHints,sanitizeLoginUrl,ROOT,terminateAll} from '../src/adapters/index.mjs';
+import {runAdapter,checkAuth,extractLoginHints,sanitizeLoginUrl,maskLine,ROOT,terminateAll} from '../src/adapters/index.mjs';
 const MOCK=new URL('../src/adapters/mock-cli.mjs',import.meta.url).pathname;
 const tmp=()=>mkdtemp(path.join(os.tmpdir(),'hub71-'));
 const PASS='synthetic password 1';
@@ -259,5 +259,13 @@ test('V27: IPv4-mapped and compressed IPv6 forms of the peer match the rule; emb
   const s=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS,HUB_TRUST_PROXY:'1',HUB_TRUSTED_PROXIES:rule,HOST:'::'});t.after(()=>s.srv.kill());
   const r=await s.call('/api/login',{method:'POST',headers:{'x-forwarded-proto':'https',origin:'https://127.0.0.1:'+s.port},body:JSON.stringify({password:PASS})});assert.equal(r.status,200,rule);
  }
+});
+test('V28: ANSI colour codes around a login URL or code are stripped (found in production with Codex 0.163)',async()=>{
+ const {stripAnsi}=await import('../src/adapters/index.mjs');
+ const out='\x1b[1mOpen \x1b[4mhttps://auth.openai.com/codex/device\x1b[0m\x1b[24m and enter \x1b[32mABCD-12345\x1b[0m\n';
+ const h=extractLoginHints(out);
+ assert.deepEqual(h.urls,['https://auth.openai.com/codex/device']);assert.deepEqual(h.codes,['ABCD-12345']);
+ assert.equal(stripAnsi('\x1b]8;;https://x.example\x07link\x1b]8;;\x07'),'link','OSC hyperlinks stripped too');
+ assert.equal(maskLine('\x1b[31mtoken=abc\x1b[0m'),'token=[가림]');
 });
 test('cleanup',async()=>{await terminateAll(200);});
