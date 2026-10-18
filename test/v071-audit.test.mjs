@@ -268,4 +268,24 @@ test('V28: ANSI colour codes around a login URL or code are stripped (found in p
  assert.equal(stripAnsi('\x1b]8;;https://x.example\x07link\x1b]8;;\x07'),'link','OSC hyperlinks stripped too');
  assert.equal(maskLine('\x1b[31mtoken=abc\x1b[0m'),'token=[가림]');
 });
+test('V29 (v0.8 Gemini): file-based auth status → only Google-account OAuth with refresh_token passes; API key / Vertex blocked; no creds = not_logged_in',async()=>{
+ const {loadConfig,AUTH_PARSERS,PARSERS}=await import('../src/adapters/index.mjs');
+ const cfg=await loadConfig();const g=cfg.adapters.find(a=>a.id==='gemini');assert.equal(g.authCheck.parser,'gemini-json');assert.equal(g.login.command,'node');
+ const H=await mkdtemp(path.join(os.tmpdir(),'gem-'));await mkdir(path.join(H,'.gemini'),{recursive:true});
+ assert.equal((await checkAuth(g,process.env,{HOME:H})).state,'not_logged_in');
+ await writeFile(path.join(H,'.gemini/settings.json'),JSON.stringify({security:{auth:{selectedType:'oauth-personal'}}}));
+ await writeFile(path.join(H,'.gemini/oauth_creds.json'),JSON.stringify({access_token:'a',refresh_token:'r',expiry_date:1}));
+ const ok=await checkAuth(g,process.env,{HOME:H});assert.equal(ok.state,'subscription');assert.ok(!JSON.stringify(ok).includes('"r"'),'no token values leak');
+ await writeFile(path.join(H,'.gemini/oauth_creds.json'),JSON.stringify({access_token:'a',expiry_date:1}));
+ assert.equal((await checkAuth(g,process.env,{HOME:H})).state,'not_logged_in','expired access token without refresh token → re-login');
+ for(const [t,st] of [['gemini-api-key','api_key'],['vertex-ai','third_party'],['cloud-shell','third_party']]){await writeFile(path.join(H,'.gemini/settings.json'),JSON.stringify({security:{auth:{selectedType:t}}}));assert.equal((await checkAuth(g,process.env,{HOME:H})).state,st,t);}
+ assert.equal(AUTH_PARSERS['gemini-json']('nope').state,'unverified');
+ // -o json 의 stats.models 토큰 합산
+ const r=PARSERS['gemini-json'](JSON.stringify({response:'hi',stats:{models:{'gemini-2.5-pro':{tokens:{prompt:10,candidates:5,thoughts:2}},'gemini-2.5-flash':{tokens:{prompt:3,candidates:1}}}}}));
+ assert.equal(r.text,'hi');assert.deepEqual(normalizeUsage(r.usage),{input:13,output:8});
+ // 로그인 힌트: 토큰 교환 endpoint 는 제외, 틀린 코드 뒤 재발급된 URL 이 먼저
+ const h=extractLoginHints('visit https://accounts.google.com/o/oauth2/v2/auth?a=1\nEnter code:\nPOST https://oauth2.googleapis.com/token failed\nvisit https://accounts.google.com/o/oauth2/v2/auth?a=2\n');
+ assert.deepEqual(h.urls,['https://accounts.google.com/o/oauth2/v2/auth?a=2','https://accounts.google.com/o/oauth2/v2/auth?a=1']);
+ await rm(H,{recursive:true,force:true});
+});
 test('cleanup',async()=>{await terminateAll(200);});

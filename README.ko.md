@@ -30,9 +30,9 @@ v0.6 의 다인용(계정·초대·관리자)은 뺐습니다. 서버 = 사무�
 
 - **Claude**: 서버가 `claude auth login` 을 띄우고 화면에 **URL** 이 뜹니다. 폰에서 그 URL 을 열어 Claude 구독 계정으로 로그인 → 화면에 나온 코드를 입력칸에 붙여넣고 전송. 끝나면 "● 연결됨 · pro/max".
 - **ChatGPT (Codex)**: `codex login --device-auth`. 미리 ChatGPT 웹 → Settings → Security 에서 **device code 로그인 허용**이 켜져 있어야 합니다. URL 열고 코드 입력.
-- **Gemini**: 아직 화면 연결 미지원 (v0.8 예정). 참여자 목록에는 보이지만 연결 버튼이 없습니다.
+- **Gemini** (v0.8): Gemini CLI 에는 로그인 명령이 없어서 허브가 가짜 터미널 안에서 `gemini` 를 `NO_BROWSER` 로 띄웁니다. 화면에 뜨는 **Google 로그인 URL** 을 열어 Gemini 를 쓰는 Google 계정으로 로그인 → 마지막에 보이는 **인증 코드**(`4/0A…` 꼴)를 입력칸에 붙여넣고 전송. 로그인 상태는 상태 명령 대신 `~/.gemini/settings.json`(Google 계정 로그인인지)과 `oauth_creds.json`(refresh_token 유무만)으로 판정합니다. API 키·Vertex 는 차단. Google Workspace 계정은 Google Cloud 프로젝트를 요구할 수 있어 개인 Gmail 계정을 권합니다. 세션 이어가기(2턴 기억)는 Gemini 만 아직 없음 — 매 호출 memory.md 와 원문으로 맥락을 줍니다.
 
-로그인 정보는 서버의 `/app/data/users/1/home/` 아래에만 저장됩니다. 허브는 토큰을 읽지 않고, 호출 직전마다 공식 CLI 의 **상태 명령**(`claude auth status`, `codex login status`)으로 "구독 로그인"인지만 확인한 뒤 호출합니다. API 키 모드·서드파티 인증이면 차단합니다.
+로그인 정보는 서버의 `/app/data/users/1/home/` 아래에만 저장됩니다. 허브는 토큰을 읽지 않고, 호출 직전마다 공식 CLI 의 **상태 명령**(`claude auth status`, `codex login status`; Gemini 는 설정·자격 파일의 종류만 확인)으로 "구독 로그인"인지만 확인한 뒤 호출합니다. API 키 모드·서드파티 인증이면 차단합니다.
 
 ## 3. 쓰는 법
 
@@ -124,9 +124,16 @@ npm start         # http://127.0.0.1:8787
 | V26 | `HUB_TRUSTED_PROXIES` 항목이 하나라도 잘못되면(`/33`, 빈 prefix, IP 아님) 시작 거부. 잘못된 항목을 조용히 버려 "모든 peer 신뢰"로 바뀌는 일 없음. `/0` 은 명시했을 때만 |
 | V27 | 직접 짠 CIDR 파서 제거 → Node 내장 `net.BlockList` (`src/trusted.mjs`). IPv4-mapped IPv6(`::ffff:a.b.c.d`), 압축 표기, embedded IPv4 모두 정확히 비교 |
 
+### v0.7.4 → v0.8.0
+
+| ID | 고친/더한 것 |
+| --- | --- |
+| V29 | Gemini 화면 연결: `src/adapters/gemini-login.mjs`(pty + NO_BROWSER, URL 출력까지 Linux 검증) · `gemini-auth-status.mjs`(파일 기반 판정, 토큰 값은 출력 안 함) · `-o json` 의 `stats.models` 토큰 합산 · 로그인 힌트에서 토큰 교환 endpoint 제외 |
+| UI | 팀장 모드의 ① 계획 말풍선은 분배 요약만 보이고 계획 JSON 원문은 접어 둠(검토·기억 버튼도 없음). 답은 ③ 종합에만 |
+
 ## 8. 아직 없는 것 (v0.8 후보)
 
-- Gemini 화면 연결 (OAuth 비브라우저 흐름 확인 필요) · Grok
+- Gemini 세션 이어가기(`--resume` 이 ID 가 아니라 번호라 보류) · Grok
 - 승인 큐: "돈 쓰기·삭제 전엔 물어봐" 를 방 안의 [승인]/[거부] 버튼으로
 - Claude 부분 출력(stream-json), 도구 권한 모드(`--permission-mode`) 설정
 - 푸시 알림, 대화 검색·내보내기, 스케줄 실행

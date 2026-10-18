@@ -62,7 +62,7 @@ function aiHtml(m){
   const p=m.status==='running'?partials[m.id]:null;
   let body='',cls=m.status;
   if(m.status==='running')body=p?.partial?`<span class="partial">${esc(p.partial)}</span><div class="progress">수신 중 … ${(p.bytes/1024).toFixed(1)}KB · ${(p.elapsedMs/1000).toFixed(0)}s</div>`:`<span class="dots">${m.kind==='plan'?'계획 세우는 중':m.kind==='final'?'종합하는 중':'생각 중'}</span>`;
-  else if(m.status==='done')body=esc(m.text);
+  else if(m.status==='done')body=m.kind==='plan'?`<details class="raw"><summary>계획 원문(JSON)</summary><pre>${esc(m.text)}</pre></details>`:esc(m.text);   // 팀장의 계획 JSON 은 접어 둔다 — 화면에는 분배 요약만, 답은 ③ 종합 말풍선에
   else if(m.status==='blocked')body=`🚫 ${esc(msg(m.error))}`;
   else if(m.status==='cancelled')body='취소됨';
   else body=`⚠️ 오류: ${esc(msg(m.error))}${m.text?'\n\n'+esc(m.text):''}`;
@@ -71,8 +71,8 @@ function aiHtml(m){
   const ev=m.evidence?`<details><summary>실행 증거</summary><pre>${esc(`종료 코드 ${m.exitCode??'-'}${m.signal?' / 시그널 '+m.signal:''}${m.timedOut?' / 시간 초과':''}\nstdout ${m.evidence.stdoutBytes}B · stderr ${m.evidence.stderrBytes}B\n${m.evidence.dir}`)}</pre></details>`:'';
   const auth=m.status==='blocked'&&m.authCheck?`<details><summary>인증 확인</summary><pre>${esc(`${m.authCheck.state} (${m.authCheck.reason})${m.authCheck.subscriptionType?' / 구독 '+m.authCheck.subscriptionType:''}`)}</pre></details>`:'';
   const others=state.adapters.filter(x=>x.id!==m.adapter&&connected(x));
-  const acts=m.status==='done'?`<div class="acts">${others.map(x=>`<button data-handoff="${m.id}" data-to="${x.id}">→ ${esc(x.label)} 검토</button>`).join('')}<button data-memo="${m.id}">🧠 기억</button><button data-save="${m.id}">💾 저장</button><button data-copy="${m.id}">복사</button></div>`:'';
-  return `<div class="m ai" id="m${m.id}" style="--ai-color:${esc(a.color)}"><div class="av">${esc(initial(a))}</div><div class="body"><div class="name">${esc(a.label)}</div><div class="bubble ${cls}">${kind}${body}${plan}${auth||ev}</div>${acts}<div class="meta"><span>${timeOf(m.at)}</span>${m.status==='done'&&m.elapsedMs?`<span>${(m.elapsedMs/1000).toFixed(1)}s</span>`:''}${m.usage?`<span>${esc(usageShort(m.usage))}</span>`:''}</div></div></div>`;
+  const acts=m.status==='done'&&m.kind!=='plan'?`<div class="acts">${others.map(x=>`<button data-handoff="${m.id}" data-to="${x.id}">→ ${esc(x.label)} 검토</button>`).join('')}<button data-memo="${m.id}">🧠 기억</button><button data-save="${m.id}">💾 저장</button><button data-copy="${m.id}">복사</button></div>`:'';
+  return `<div class="m ai" id="m${m.id}" style="--ai-color:${esc(a.color)}"><div class="av">${esc(initial(a))}</div><div class="body"><div class="name">${esc(a.label)}</div><div class="bubble ${cls}">${kind}${m.kind==='plan'&&m.status==='done'?plan+body:body+plan}${auth||ev}</div>${acts}<div class="meta"><span>${timeOf(m.at)}</span>${m.status==='done'&&m.elapsedMs?`<span>${(m.elapsedMs/1000).toFixed(1)}s</span>`:''}${m.usage?`<span>${esc(usageShort(m.usage))}</span>`:''}</div></div></div>`;
 }
 function usageShort(u){const i=u.input??u.input_tokens??u.prompt_tokens,o=u.output??u.output_tokens??u.completion_tokens;return Number.isFinite(i)&&Number.isFinite(o)?`${i}+${o} 토큰`:'';}
 function renderTimeline(){

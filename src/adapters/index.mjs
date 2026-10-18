@@ -43,7 +43,11 @@ export const PARSERS={
   },
   'gemini-json'(stdout){
     let data;try{data=JSON.parse(stdout);}catch{return {text:stdout.trim(),session:null,usage:null,raw:null};}
-    return {text:data.response??data.result??data.text??'',session:data.session_id??data.sessionId??null,usage:data.stats??null,raw:data};
+    // v0.8: -o json 의 stats.models[모델].tokens{prompt,candidates,thoughts,...} 를 모델 합산으로 정규화(문서 기준, 실배포에서 확인). 모양이 다르면 stats 원문을 그대로 넘겨 normalizeUsage 가 아는 키만 쓴다.
+    let usage=data.stats??null;
+    const models=usage?.models;
+    if(models&&typeof models==='object'){let input=0,output=0,seen=false;for(const m of Object.values(models)){const t=m?.tokens;if(!t||typeof t!=='object')continue;seen=true;input+=Number(t.prompt)||0;output+=(Number(t.candidates)||0)+(Number(t.thoughts)||0);}if(seen)usage={input,output,raw:models};}
+    return {text:data.response??data.result??data.text??'',session:data.session_id??data.sessionId??null,usage,raw:data};
   },
   'mock-json'(stdout){const d=JSON.parse(stdout);return {text:d.text,session:d.session,usage:d.usage??null,raw:d};},
   'plain'(stdout){return {text:stdout.trim(),session:null,usage:null,raw:null};}
@@ -248,13 +252,26 @@ export const AUTH_PARSERS={
     if(lines.some(l=>/^Not logged in\b/i.test(l)))return {state:'not_logged_in',reason:'not_logged_in_line'};
     return {state:'unverified',reason:lines.length?'unrecognized_output':'empty_output'};
   },
+  // v0.8 Gemini: src/adapters/gemini-auth-status.mjs 가 HOME/.gemini 의 설정·자격 파일을 읽어 낸 JSON. 허용: Google 계정 로그인(oauth-personal) + refresh_token 보유.
+  // 차단: gemini-api-key(API 키), vertex-ai / cloud-shell / 기타(서드파티 경로). 자격 파일 없음 → not_logged_in.
+  'gemini-json'(stdout){
+    let d;try{d=JSON.parse(stdout);}catch{return {state:'unverified',reason:'malformed_json'};}
+    if(!d||typeof d!=='object'||Array.isArray(d))return {state:'unverified',reason:'unexpected_shape'};
+    const authType=typeof d.authType==='string'?d.authType:null;
+    if(authType==='gemini-api-key')return {state:'api_key',reason:'auth_type_gemini_api_key',authMethod:authType};
+    if(authType&&authType!=='oauth-personal')return {state:'third_party',reason:'auth_type_'+authType,authMethod:authType};
+    if(d.loggedIn===false)return {state:'not_logged_in',reason:d.reason==='no_credentials'?'no_credentials':'logged_in_false',authMethod:authType};
+    if(d.loggedIn!==true)return {state:'unverified',reason:'logged_in_missing',authMethod:authType};
+    if(d.hasRefreshToken!==true)return {state:'unverified',reason:'refresh_token_missing',authMethod:authType};
+    return {state:'subscription',reason:'google_account_oauth',authMethod:'oauth-personal',apiProvider:'google',subscriptionType:'google-account'};
+  },
   // 테스트용 모의 CLI: Claude 와 같은 JSON 형식
   'mock-json'(stdout){return AUTH_PARSERS['claude-json'](stdout);}
 };
 // 어떤 스트림을 판정에 쓰는지는 파서별로 정한다 (GPT R01: codex 0.158 의 `login status` 는 "Logged in using ChatGPT" 를 stderr 로 낸다).
 // JSON 파서(claude)는 stdout 만 — stderr 경고가 섞이면 JSON 이 깨지므로 합치지 않는다. 텍스트 행 파서(codex)는 stdout 다음 stderr 를 이어 붙여 본다.
 // 어댑터 authCheck.output 으로 덮어쓸 수 있다: 'stdout' | 'stderr' | 'both'.
-export const AUTH_PARSER_STREAMS={'claude-json':'stdout','codex-text':'both','mock-json':'stdout'};
+export const AUTH_PARSER_STREAMS={'claude-json':'stdout','codex-text':'both','gemini-json':'stdout','mock-json':'stdout'};
 export function checkAuth(adapter,parentEnv=process.env,extraEnv={},signal=null,cwd=undefined){   // cwd: 실행과 같은 작업 폴더를 주면 프로젝트 설정(.claude/settings.json 등)까지 같은 조건으로 판정 (검수 V09)
   const check=adapter.authCheck;
   if(!check||!Array.isArray(check.args)||!AUTH_PARSERS[check.parser])return Promise.resolve({id:adapter.id,state:'unverified',reason:'no_auth_check_configured'});
@@ -262,7 +279,7 @@ export function checkAuth(adapter,parentEnv=process.env,extraEnv={},signal=null,
   return new Promise(resolve=>{
     const {env}=buildChildEnv(parentEnv,adapter,extraEnv);
     let child;
-    try{child=spawnChild(adapter.command,fill(check.args,{root:ROOT}),{env,cwd,stdio:['ignore','pipe','pipe']});}
+    try{child=spawnChild(check.command??adapter.command,fill(check.args,{root:ROOT}),{env,cwd,stdio:['ignore','pipe','pipe']});}   // v0.8: command 를 덮어쓸 수 있다 (Gemini 는 상태 명령이 없어 허브의 node 스크립트가 파일을 읽어 판정)
     catch{return resolve({id:adapter.id,state:'unverified',reason:'spawn_failed'});}
     const out=collector(),err=collector();
     child.stdout.on('data',d=>out.push(d));child.stderr.on('data',d=>err.push(d));
@@ -295,7 +312,8 @@ const ANSI_RE=/\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[
 export const stripAnsi=s=>String(s??'').replace(ANSI_RE,'');
 export function extractLoginHints(raw){
   const text=stripAnsi(raw);
-  const urls=[...new Set((text.match(URL_RE)??[]).map(u=>sanitizeLoginUrl(u.replace(/[.,;]+$/,''))).filter(Boolean))];
+  // v0.8: 토큰 교환 endpoint(…/token) 는 사용자가 열 주소가 아니다(Gemini 가 코드 오류 뒤 로그에 남김). 코드가 틀려 새 URL 이 다시 나오면 최신 것이 앞에 오도록 역순.
+  const urls=[...new Set((text.match(URL_RE)??[]).map(u=>sanitizeLoginUrl(u.replace(/[.,;]+$/,''))).filter(u=>u&&!/\/token\/?$/i.test(u.split('?')[0])))].reverse();
   const codes=[...new Set(text.match(CODE_RE)??[])];
   return {urls,codes};
 }
@@ -315,7 +333,7 @@ export function startLogin(adapter,{cwd,parentEnv=process.env,extraEnv={},timeou
   const {env,blockedNames}=buildChildEnv(parentEnv,adapter,extraEnv);
   const args=fill(login.args,{root:ROOT});
   let child;
-  try{child=spawnChild(adapter.command,args,{cwd,env,stdio:['pipe','pipe','pipe']});}
+  try{child=spawnChild(login.command??adapter.command,args,{cwd,env,stdio:['pipe','pipe','pipe']});}   // v0.8: login.command 로 래퍼 실행 가능 (Gemini 는 pty 래퍼)
   catch(e){return {error:'spawn_failed'};}
   child.stdin.on('error',()=>{});
   const out=collector(),err=collector();let combined='';let timedOut=false;const startedAt=Date.now();
