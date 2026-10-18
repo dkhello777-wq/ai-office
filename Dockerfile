@@ -26,7 +26,7 @@ ENV HOST=0.0.0.0 \
     HUB_TRUST_PROXY=0 \
     NODE_ENV=production \
     HOME=/home/office
-VOLUME ["/app/data"]
+# (Railway 는 Dockerfile 의 VOLUME 을 거부한다 — 볼륨은 플랫폼에서 /app/data 에 붙인다. docker run 은 -v office-data:/app/data)
 EXPOSE 8787
 
 RUN mkdir -p /app/data /home/office && chown -R node:node /app /home/office
