@@ -51,7 +51,7 @@ export class Store{
     return this._chain;
   }
   add(message){const m={id:this.state.nextId++,at:new Date().toISOString(),...message};if(typeof m.text==='string')m.hash=sha256(m.text);this.state.messages.push(m);return this.bump(m);}
-  update(id,patch){const m=this.state.messages.find(x=>x.id===id);if(m){Object.assign(m,patch);this.bump(m);}return m;}
+  update(id,patch){const m=this.state.messages.find(x=>x.id===id);if(m){Object.assign(m,patch);if(m.status&&m.status!=='running'&&m.role==='assistant'&&!m.finishedAt)m.finishedAt=new Date().toISOString();this.bump(m);}return m;}   // v0.9.1 finishedAt: 답이 끝난 시각 → 화면이 먼저 끝난 AI 부터 놓는다
   get(id){return this.state.messages.find(x=>x.id===id)??null;}
   session(adapterId){return this.state.sessions[adapterId]??null;}
   // 세대(epoch): "새 대화" 뒤에 늦게 끝난 이전 실행이 옛 세션을 되살리지 못하게 한다 (GPT R09). 시작 때 epoch 를 받아 두고 같은 세대일 때만 저장.

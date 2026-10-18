@@ -52,11 +52,12 @@ const dayOf=iso=>new Date(iso).toLocaleDateString('ko-KR',{year:'numeric',month:
 // v0.8.9 긴 글 접기: 7줄(또는 700자) 넘는 말풍선은 처음 7줄만 보이고 "전체 보기" 로 펼친다. 본문은 그대로 다 들어 있고(복사·저장·검토도 전문), 화면 표시만 접는다.
 // 펼친 말풍선은 expanded 에 기억해 스트리밍·새 메시지로 다시 그려도 펼친 채로 둔다.
 const CLIP_LINES=7,CLIP_CHARS=700;const expanded=new Set();
+const clipLabel=(open,lines)=>open?'▲ 접기':`▼ 전체 보기 · ${lines}줄`;
 function clip(id,text,html){
   const t=String(text??'');const lines=t.split('\n').length;
   if(lines<=CLIP_LINES&&t.length<=CLIP_CHARS)return html;
   const open=expanded.has(id);
-  return `<div class="clip${open?' open':''}">${html}</div><button class="clip-btn" data-clip="${id}">${open?'▲ 접기':`▼ 전체 보기 · ${lines}줄`}</button>`;
+  return `<div class="clip${open?' open':''}">${html}</div><button class="clip-btn" data-clip="${id}" data-lines="${lines}">${clipLabel(open,lines)}</button>`;
 }
 function userHtml(m){
   const all=state.adapters.filter(connected).map(a=>a.id);
@@ -86,20 +87,37 @@ function aiHtml(m){
 function usageShort(u){const i=u.input??u.input_tokens??u.prompt_tokens,o=u.output??u.output_tokens??u.completion_tokens;return Number.isFinite(i)&&Number.isFinite(o)?`${i}+${o} 토큰`:'';}
 function renderTimeline(){
   const tl=$('#timeline');const chat=$('#chat');const atBottom=chat.scrollHeight-chat.scrollTop-chat.clientHeight<80;
+  // v0.9.1 읽던 자리 유지: 화면 맨 위에 걸친 말풍선과 그 위치를 기억했다가 다시 그린 뒤 같은 자리로 맞춘다 (맨 아래를 보고 있을 때만 아래로 따라감)
+  const anchor=atBottom?null:readingAnchor(chat,tl);
   let html='',lastDay='';
   if(!state.messages.length)html=`<div class="sys">여기는 내 AI 오피스입니다.<br>오른쪽 위 참여자에서 구독 중인 AI 를 연결하면 방에 들어옵니다.</div>`;
-  for(const m of state.messages){
+  for(const m of orderTimeline(state.messages)){   // v0.9.1: 모두에게 보낸 답은 먼저 끝난 AI 부터 (public/order.js)
     const d=dayOf(m.at);if(d!==lastDay){html+=`<div class="day">${esc(d)}</div>`;lastDay=d;}
     html+=m.role==='user'?userHtml(m):aiHtml(m);
   }
   tl.innerHTML=html;
   $('#stop').hidden=!state.messages.some(m=>m.status==='running');   // v0.8.8: 돌고 있는 AI 가 있을 때만 긴급 중지 버튼
   if(atBottom)chat.scrollTop=chat.scrollHeight;
-  tl.querySelectorAll('[data-clip]').forEach(b=>b.onclick=()=>{const id=Number(b.dataset.clip);const was=expanded.has(id);was?expanded.delete(id):expanded.add(id);renderTimeline();if(was)document.getElementById('m'+id)?.scrollIntoView({block:'nearest'});});
+  else if(anchor){const el=document.getElementById(anchor.id);if(el)chat.scrollTop+=el.getBoundingClientRect().top-anchor.top;}
+  // v0.9.1 펼치기·접기: 전체를 다시 그리지 않고 그 자리에서 바꾼다. 말풍선 위치를 고정해 펼친 곳 아래로 늘어난다 (전에는 다시 그리면서 답변 맨 아래로 내려갔다)
+  tl.querySelectorAll('[data-clip]').forEach(b=>b.onclick=()=>toggleClip(b));
   tl.querySelectorAll('[data-handoff]').forEach(b=>b.onclick=()=>handoff(Number(b.dataset.handoff),b.dataset.to));
   tl.querySelectorAll('[data-save]').forEach(b=>b.onclick=async()=>{const name=prompt('저장할 파일 이름',`answer-${b.dataset.save}.md`);if(name){await api('/api/save',{method:'POST',body:JSON.stringify({messageId:Number(b.dataset.save),name})});toast('파일로 저장됨');}});
   tl.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{navigator.clipboard.writeText(state.messages.find(m=>m.id===Number(b.dataset.copy))?.text??'');toast('복사됨');});
   tl.querySelectorAll('[data-memo]').forEach(b=>b.onclick=async()=>{const note=prompt('메모리에 덧붙일 한 줄 설명 (비워도 됨)','');if(note===null)return;try{const r=await api('/api/memory/append',{method:'POST',body:JSON.stringify({messageId:Number(b.dataset.memo),note})});state.memory=r;renderBadges();toast('메모리에 추가됨');}catch(e){toast(msg(e.message));}});
+}
+function readingAnchor(chat,tl){
+  const top=chat.getBoundingClientRect().top;
+  for(const el of tl.querySelectorAll('.m')){const r=el.getBoundingClientRect();if(r.bottom>top+1)return {id:el.id,top:r.top};}
+  return null;
+}
+function toggleClip(b){
+  const id=Number(b.dataset.clip),box=b.previousElementSibling,chat=$('#chat');if(!box)return;
+  const open=!expanded.has(id);open?expanded.add(id):expanded.delete(id);
+  const before=box.getBoundingClientRect().top;
+  box.classList.toggle('open',open);b.textContent=clipLabel(open,b.dataset.lines);
+  chat.scrollTop+=box.getBoundingClientRect().top-before;   // 말풍선 윗부분을 제자리에
+  if(!open){const r=box.getBoundingClientRect(),c=chat.getBoundingClientRect();if(r.top<c.top)chat.scrollTop-=c.top-r.top+8;}   // 접었는데 말풍선 머리가 화면 위로 숨었으면 보이게
 }
 function scrollBottom(){const c=$('#chat');c.scrollTop=c.scrollHeight;}
 
