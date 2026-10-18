@@ -185,9 +185,26 @@ async function statePayload(ctx){
   return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream})),messages:ctx.store.state.messages,workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
 }
 // 프롬프트 합성: (메모리) + (다른 AI 답변 전문) + 본문 + 첨부 안내. 원문을 요약하거나 자르지 않는다.
-function composePrompt({text,files=[],handoff=null,memory=''}){
+// v0.8.5 방 대화 공유: 같은 방의 최근 메시지(사용자 + 다른 AI 의 완료된 답변)를 프롬프트 앞에 붙여, AI 끼리 서로의 말을 보고 이어 말할 수 있게 한다.
+// 범위: 최근 ROOM.recent 개 · 전체 ROOM.maxChars 자 · 메시지당 ROOM.perMessage 자. 팀장 내부 단계(plan/task)는 제외하고 ③ 종합만 넣는다. 현재 요청(마지막 사용자 메시지)은 제외.
+const ROOM={recent:config.room?.recent??20,maxChars:config.room?.maxChars??6000,perMessage:config.room?.perMessage??800};
+export function roomContext(ctx,{forAdapter,excludeMessageId}){
+  if(ctx.user?.roomShare===false)return '';
+  const label=id=>adapters.find(a=>a.id===id)?.label??id;
+  const msgs=ctx.store.state.messages.filter(m=>m.id!==excludeMessageId&&(m.role==='user'||(m.status==='done'&&m.text&&m.kind!=='plan'&&m.kind!=='task'))).slice(-ROOM.recent);
+  const lines=[];let total=0;
+  for(const m of msgs.reverse()){   // 최신부터 채우고 뒤집는다 — 상한에 걸리면 오래된 것부터 빠진다
+    const who=m.role==='user'?'사용자':label(m.adapter)+(m.adapter===forAdapter?' (당신)':'');
+    let t=String(m.text).trim();if(t.length>ROOM.perMessage)t=t.slice(0,ROOM.perMessage)+' …(생략)';
+    const line=`${who}: ${t}`;if(total+line.length>ROOM.maxChars)break;total+=line.length;lines.push(line);
+  }
+  if(!lines.length)return '';
+  return `[방 대화 — 이 방의 최근 메시지입니다(오래된 것부터). 다른 AI 의 말은 동의·반박·보완해도 됩니다. 당신은 "${label(forAdapter)}" 입니다. 답변에는 이 목록을 다시 쓰지 말고 바로 본론을 쓰세요.]\n${lines.reverse().join('\n')}\n\n`;
+}
+function composePrompt({text,files=[],handoff=null,memory='',room=''}){
   let p='';
   if(memory&&memory.trim())p+=`[내 메모리 — 이전 대화에서 저장해 둔 맥락·결정·취향입니다. 작업 폴더의 memory.md 와 같습니다. 참고만 하고, 사용자 요청이 우선입니다.]\n${memory.trim()}\n\n`;
+  if(room)p+=room;
   if(handoff)p+=`[다른 AI(${handoff.fromLabel})의 답변 전문입니다. 그대로 검토·참고하세요.]\n${handoff.text}\n\n[사용자 요청]\n`;
   p+=text;
   if(files.length)p+=`\n\n[첨부 파일 — 현재 작업 폴더의 shared/ 안에 있습니다. 직접 읽어서 참고하세요]\n`+files.map(f=>`- shared/${f}`).join('\n');
@@ -270,18 +287,18 @@ async function dispatch(ctx,{text,targets,files,handoff}){
   const {store}=ctx;
   const userMsg=store.add({role:'user',text,files,targets,handoffFrom:handoff?.messageId??null});
   emit(ctx,'message',userMsg);await store.save();
-  const prompt=composePrompt({text,files,handoff,memory:await readMemory(ctx)});
-  const work=Promise.all(targets.map(id=>{const adapter=adapters.find(a=>a.id===id);if(!adapter)return;return serialOn(ctx,adapter.id,()=>runOne(ctx,adapter,{prompt,replyTo:userMsg.id}));}));
+  const memory=await readMemory(ctx);
+  const work=Promise.all(targets.map(id=>{const adapter=adapters.find(a=>a.id===id);if(!adapter)return;const prompt=composePrompt({text,files,handoff,memory,room:roomContext(ctx,{forAdapter:adapter.id,excludeMessageId:userMsg.id})});return serialOn(ctx,adapter.id,()=>runOne(ctx,adapter,{prompt,replyTo:userMsg.id}));}));
   work.catch(e=>console.error('dispatch',e));
   return userMsg;
 }
 
 // ---- v0.5 오케스트레이터: 팀장 AI 에게 목표를 주면 ① 계획(JSON) → ② 서버가 워커 AI 들에 분배(병렬) → ③ 팀장이 종합. ----
 // 세 단계 모두 일반 호출과 같은 인증·예산·증거 규칙을 탄다. 계획 JSON 은 팀장 답변 본문에서 뽑고, 못 뽑으면 plan_parse_failed 로 끝낸다.
-function planPrompt({goal,files,lead,workers,memory}){
+function planPrompt({goal,files,lead,workers,memory,room=''}){
   const roster=workers.map(w=>`- "${w.id}": ${w.label}${w.roleHint?' — '+w.roleHint:''}`).join('\n');
   const body=`### HUB:PLAN\n당신은 이 AI 오피스의 팀장(오케스트레이터)입니다. 아래 목표를 읽고, 팀원 AI 에게 나눠 줄 작업을 계획하세요.\n\n[팀원 — worker 값으로 정확히 이 id 를 쓰세요]\n${roster}\n\n[규칙]\n- 작업은 최대 ${ORCH_MAX_TASKS}개. 서로 독립적으로 수행 가능해야 합니다(병렬 실행).\n- 각 작업의 prompt 는 그 팀원이 아무 맥락 없이 읽어도 수행할 수 있게 완결된 지시문으로 쓰세요. 목표의 필요한 부분을 그대로 포함하세요.\n- 팀원에게 맡길 필요 없이 바로 답할 수 있으면 tasks 를 빈 배열로 두고 answer 에 최종 답을 쓰세요.\n- 답변은 아래 JSON 하나만, 다른 설명 없이:\n{"tasks":[{"worker":"<id>","title":"<짧은 제목>","prompt":"<완결된 지시문>"}],"note":"<계획 의도 한 줄>","answer":null}\n\n[목표]\n${goal}`;
-  return composePrompt({text:body,files,memory});
+  return composePrompt({text:body,files,memory,room});
 }
 function synthPrompt({goal,results}){
   const parts=results.map((r,i)=>`--- 작업 ${i+1}: ${r.title||'(제목 없음)'} · 담당 ${r.label} · 상태 ${r.status}${r.error?' ('+r.error+')':''} ---\n${r.text||'(결과 없음)'}`).join('\n\n');
@@ -296,7 +313,7 @@ async function orchestrate(ctx,{text,files,leadId,workerIds}){
   const run=(async()=>{
     const memory=await readMemory(ctx);
     // ① 계획
-    const plan=await serialOn(ctx,lead.id,()=>runOne(ctx,lead,{prompt:planPrompt({goal:text,files,lead,workers,memory}),replyTo:userMsg.id,kind:'plan'}));
+    const plan=await serialOn(ctx,lead.id,()=>runOne(ctx,lead,{prompt:planPrompt({goal:text,files,lead,workers,memory,room:roomContext(ctx,{forAdapter:lead.id,excludeMessageId:userMsg.id})}),replyTo:userMsg.id,kind:'plan'}));
     if(plan.status!=='done')return;
     if(isDisabled(ctx)){store.update(plan.id,{orchestrateError:'user_disabled'});emit(ctx,'message',store.get(plan.id));await store.save();return;}   // 계획 뒤 중지됨 → 팀원 단계 자체를 만들지 않는다 (GPT R08)
     const parsed=extractPlan(plan.text,workers.map(w=>w.id),ORCH_MAX_TASKS);
@@ -408,6 +425,10 @@ const server=http.createServer(async(req,res)=>{
         const id=a.adapterId===null||a.adapterId===undefined||a.adapterId===''?null:String(a.adapterId);
         if(id!==null&&!adapters.some(x=>x.id===id))return json(res,{error:'adapter_not_found'},404);
         await owner.setLead(id);ctx.user=owner.user;emit(ctx,'state',await statePayload(ctx));return json(res,{ok:true,lead:id});
+      }
+      if(url.pathname==='/api/settings/room'){
+        if(typeof a.share!=='boolean')return json(res,{error:'share_invalid'},400);
+        await owner.setRoomShare(a.share);ctx.user=owner.user;emit(ctx,'state',await statePayload(ctx));return json(res,{ok:true,roomShare:a.share});
       }
       if(url.pathname==='/api/settings/password'){
         let r;try{r=await owner.changePassword({current:a.current,next:a.next});}catch(e){console.error('password change persist failed',e);return json(res,{error:'persist_failed'},500);}

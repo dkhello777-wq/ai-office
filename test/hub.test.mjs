@@ -312,7 +312,7 @@ test('server: send, handoff, files, evidence dir per attempt, UTF-8 body, child 
  assert.equal(st.files[0].name,'대본.txt');assert.equal(st.files[0].bytes,Buffer.byteLength('원문 😀 '.repeat(100)));
  const r1=replies.find(m=>m.adapter==='mock');
  await s.auth('/api/send',{method:'POST',body:JSON.stringify({text:'위 답변 검토',targets:['mock'],handoffFrom:r1.id})});
- st=await wait(s.auth,3);assert.ok(st.messages.at(-1).text.includes('[다른 AI(mock)의 답변 전문입니다'));
+ st=await wait(s.auth,3);assert.match(st.messages.at(-1).text,/첫 줄: \[방 대화/,'v0.8.5: room block now precedes the handoff block; the handoff itself is covered by prompt length');assert.ok(st.messages.at(-1).usage.input>300,'handoff text included');
  const saved=await s.auth('/api/save',{method:'POST',body:JSON.stringify({messageId:r1.id,name:'mock-answer.txt'})});assert.equal(saved.body.name,'mock-answer.txt');
  const shared=path.join(s.dir,'data/users',String(s.admin.body.user.id),'workspace/shared');
  assert.equal(await readFile(path.join(shared,'mock-answer.txt'),'utf8'),r1.text);

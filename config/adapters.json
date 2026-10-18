@@ -109,11 +109,9 @@
         "--input-format",
         "stream-json",
         "--output-format",
-        "stream-json",
-        "--mode",
-        "plan"
+        "stream-json"
       ],
-      "_인자": "v0.8.2: Gemini CLI 는 2026-06 부터 개인 Google 계정을 받지 않아(IneligibleTierError — 실배포에서 확인) Google 이 안내하는 후속 도구 Antigravity CLI(agy) 로 교체. --input-format stream-json: 프롬프트를 stdin NDJSON 으로 받는다(인자 길이 제한 없음, Linux 1.4.2 검증). --output-format stream-json: 마지막 result 이벤트에 response·conversation_id·usage. --mode plan: 읽기 전용(헤드리스에서는 승인 없는 도구가 자동 거부되므로 파일 읽기만 허용).",
+      "_인자": "v0.8.2: Gemini CLI 는 2026-06 부터 개인 Google 계정을 받지 않아(IneligibleTierError — 실배포에서 확인) Google 이 안내하는 후속 도구 Antigravity CLI(agy) 로 교체. --input-format stream-json: 프롬프트를 stdin NDJSON 으로 받는다(인자 길이 제한 없음, Linux 1.4.2 검증). --output-format stream-json: 마지막 result 이벤트에 response·conversation_id·usage. (v0.8.5: --mode plan 은 답변마다 '/plan 모드' 멘트를 섞어 뺐다. 헤드리스에선 승인 없는 도구가 어차피 자동 거부된다.)",
       "stdinFormat": "agy-stream-json",
       "resumeArgs": [
         "--conversation",
@@ -217,5 +215,11 @@
     "concurrentPerUser": 4,
     "_설명": "업로드 1건 최대 바이트, 메시지·메모리 최대 글자, 동시 CLI 실행 수(넘으면 순서대로 대기)."
   },
-  "_호스트": "allowedHosts: 변경 요청(POST)을 받는 Host 목록. 클라우드 배포처럼 도메인을 미리 모를 때는 환경변수 HUB_ALLOWED_HOSTS=* 로 목록 검사를 끈다(Origin 일치 검사는 그대로). HOST=0.0.0.0 과 PORT 도 환경변수로."
+  "_호스트": "allowedHosts: 변경 요청(POST)을 받는 Host 목록. 클라우드 배포처럼 도메인을 미리 모를 때는 환경변수 HUB_ALLOWED_HOSTS=* 로 목록 검사를 끈다(Origin 일치 검사는 그대로). HOST=0.0.0.0 과 PORT 도 환경변수로.",
+  "room": {
+    "recent": 20,
+    "maxChars": 6000,
+    "perMessage": 800,
+    "_설명": "v0.8.5 방 대화 공유: 매 호출 프롬프트 앞에 최근 대화(사용자 + 다른 AI 의 완료 답변)를 붙인다. 메뉴에서 끌 수 있다(owner.json roomShare). 팀장 내부 단계(plan/task)는 제외."
+  }
 }

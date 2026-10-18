@@ -198,6 +198,8 @@ $('#memory-save').onclick=async()=>{try{const r=await api('/api/memory',{method:
 $('#m-files').onclick=openFromMenu('files',renderFiles);
 $('#m-budget').onclick=openFromMenu('budget',()=>{const b=state.budget;$('#budget-now').textContent=b?`${b.month} 사용 ${b.tokens.toLocaleString()} 토큰 · ${b.calls}회 · 상한 ${b.limit?b.limit.toLocaleString():'무제한'}`:'';$('#budget-in').value=b?.limit||'';});
 $('#budget-save').onclick=async()=>{try{const v=$('#budget-in').value;const r=await api('/api/settings/budget',{method:'POST',body:JSON.stringify({monthlyTokens:v===''?null:Number(v)})});state.budget=r.budget;renderBadges();$('#budget').close();toast('예산 저장됨');}catch(e){toast(msg(e.message));}};
+const roomBadge=()=>{$('#room-badge').textContent=state.user?.roomShare===false?'꺼짐':'켜짐 — AI 들이 서로의 말을 봅니다';};
+$('#m-room').onclick=async()=>{const next=state.user?.roomShare===false;try{await api('/api/settings/room',{method:'POST',body:JSON.stringify({share:next})});state.user={...(state.user??{}),roomShare:next};roomBadge();toast(next?'방 대화 공유 켬':'방 대화 공유 끔');}catch(e){toast(msg(e.message));}};
 $('#m-auth').onclick=async()=>{$('#menu').close();toast('확인 중…');try{await api('/api/auth-check',{method:'POST',body:'{}'});}catch(e){toast(msg(e.message));}};
 $('#m-password').onclick=openFromMenu('password');
 $('#password-form').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);try{await api('/api/settings/password',{method:'POST',body:JSON.stringify({current:f.get('current'),next:f.get('next')})});e.target.reset();$('#password').close();showGate({});toast('변경됨 — 다시 로그인하세요');}catch(x){$('#password-msg').textContent=msg(x.message);}};
@@ -213,7 +215,7 @@ function mergeSnapshot(snap){
 // 검수 V19: seq 가 있으면 seq 로, 없으면(옛 저장분) terminal→running 회귀만 막는다
 const TERMINAL=new Set(['done','error','blocked','cancelled']);
 function newer(cur,m){if(Number.isSafeInteger(cur.seq)&&Number.isSafeInteger(m.seq))return cur.seq>m.seq;return TERMINAL.has(cur.status)&&cur.status!==m.status;}   // seq 없음: 끝난 상태는 다른 상태로 되돌리지 않는다
-function applyState(s){state.adapters=s.adapters??state.adapters;if(s.lead!==undefined)state.lead=s.lead;if(s.messages)mergeSnapshot(s);if(s.files)state.files=s.files;if(s.budget)state.budget=s.budget;if(s.memory)state.memory=s.memory;if(s.user)state.user=s.user;}
+function applyState(s){state.adapters=s.adapters??state.adapters;if(s.lead!==undefined)state.lead=s.lead;if(s.messages)mergeSnapshot(s);if(s.files)state.files=s.files;if(s.budget)state.budget=s.budget;if(s.memory)state.memory=s.memory;if(s.user){state.user=s.user;try{roomBadge();}catch{}}}
 function connect(){
   es?.close();es=new EventSource('/api/events');
   es.onopen=async()=>{$('#conn').textContent='연결됨';$('#conn').className='conn ok';try{const snap=await api('/api/state');applyState(snap);renderAll();}catch{}};

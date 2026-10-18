@@ -59,6 +59,7 @@ export class Owner{
       if(d.authVersion!==undefined&&(!Number.isSafeInteger(d.authVersion)||d.authVersion<1))return false;
       if(d.budget!==undefined&&d.budget!==null&&(!d.budget||typeof d.budget!=='object'||!validBudgetTokens(d.budget.monthlyTokens)))return false;
       if(d.lead!==undefined&&d.lead!==null&&typeof d.lead!=='string')return false;
+      if(d.roomShare!==undefined&&typeof d.roomShare!=='boolean')return false;   // v0.8.5: 방 대화 공유(기본 켬)
       return true;
     });
     this.sessions=new JsonFile(path.join(dataDir,'sessions.json'),{sessions:{}},d=>{
@@ -81,8 +82,8 @@ export class Owner{
   get isSet(){return this.owner.exists&&!!this.owner.data;}
   get authVersion(){return this.owner.data?.authVersion??0;}
   // 고정 사용자 객체 (서버의 사용자 컨텍스트가 id 로 폴더를 만든다)
-  get user(){const d=this.owner.data??{};return {id:OWNER_ID,username:'owner',role:'owner',createdAt:d.createdAt??null,budget:d.budget??null,lead:d.lead??null,disabled:false};}
-  publicUser(u=this.user){return u?{id:u.id,username:u.username,role:u.role,createdAt:u.createdAt,budget:u.budget??null,lead:u.lead??null}:null;}
+  get user(){const d=this.owner.data??{};return {id:OWNER_ID,username:'owner',role:'owner',createdAt:d.createdAt??null,budget:d.budget??null,lead:d.lead??null,roomShare:d.roomShare??true,disabled:false};}
+  publicUser(u=this.user){return u?{id:u.id,username:u.username,role:u.role,createdAt:u.createdAt,budget:u.budget??null,lead:u.lead??null,roomShare:u.roomShare??true}:null;}
   userById(id){return id===OWNER_ID?this.user:null;}
 
   // ---- 최초 설정: 비밀번호가 없을 때만. 한 번에 한 설정만(직렬화), 해시 뒤에 다시 확인. ----
@@ -158,4 +159,5 @@ export class Owner{
     await this.owner.save();return true;
   }
   async setLead(adapterId){this.owner.data.lead=adapterId??null;await this.owner.save();return true;}
+  async setRoomShare(on){this.owner.data.roomShare=!!on;await this.owner.save();return true;}
 }

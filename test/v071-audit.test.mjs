@@ -297,4 +297,22 @@ test('V30 (v0.8.2 Antigravity): agy stream-json parse/usage, stdin NDJSON wrap, 
  const r2=await checkAuth(g,{PATH:process.env.PATH},{HOME:H});assert.equal(r2.state,'not_logged_in');assert.match(r2.reason,/agy_not_found|exit_/);
  await rm(H,{recursive:true,force:true});
 });
+test('V31 (v0.8.5 방 대화 공유): other AIs\' finished replies and the user\'s earlier messages are prepended; plan/task hidden; toggle off removes it',async t=>{
+ const s=await startServer([mockAdapter('a'),mockAdapter('b')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS});t.after(()=>s.srv.kill());
+ const u=await s.login();await u.as('/api/state');
+ await u.as('/api/send',{method:'POST',body:JSON.stringify({text:'첫 질문',targets:['a']})});
+ let st=await wait(u.as,1);assert.equal(st.messages.at(-1).status,'done');
+ assert.match(st.messages.at(-1).text,/첫 줄: 첫 질문/,'first call: nothing to share yet (the request itself is excluded)');
+ await u.as('/api/send',{method:'POST',body:JSON.stringify({text:'둘째 질문',targets:['b']})});
+ st=await wait(u.as,2);const m2=st.messages.at(-1);assert.equal(m2.adapter,'b');
+ assert.match(m2.text,/첫 줄: \[방 대화/,'second call sees the room');
+ // 프롬프트 길이로 내용 확인: a 의 답변과 사용자 첫 질문이 들어가 있어야 한다 (mock 은 prompt.length 를 usage.input 으로 돌려준다)
+ assert.ok(m2.usage.input>'둘째 질문'.length+120,'room block present');
+ // 끄기
+ const off=await u.as('/api/settings/room',{method:'POST',body:JSON.stringify({share:false})});assert.equal(off.status,200);
+ assert.equal((await u.as('/api/settings/room',{method:'POST',body:JSON.stringify({share:'no'})})).status,400);
+ await u.as('/api/send',{method:'POST',body:JSON.stringify({text:'셋째 질문',targets:['a']})});
+ st=await wait(u.as,3);assert.match(st.messages.at(-1).text,/첫 줄: 셋째 질문/,'toggle off → plain prompt');
+ const state=await u.as('/api/state');assert.equal(state.body.user.roomShare,false);
+});
 test('cleanup',async()=>{await terminateAll(200);});
