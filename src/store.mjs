@@ -9,13 +9,16 @@ export const monthKey=(d=new Date())=>d.toISOString().slice(0,7);   // 'YYYY-MM'
 export function normalizeUsage(u){
   if(!u||typeof u!=='object')return {input:0,output:0};
   const n=v=>Number.isFinite(Number(v))&&Number(v)>0?Math.floor(Number(v)):0;   // 음수·소수 방어 (Gemini FAIL2)
-  const input=n(u.input??u.input_tokens??u.prompt_tokens??u.promptTokenCount??u.promptTokens);
+  // 검수 V17: Claude 의 cache_read/cache_creation 은 input_tokens 와 별도 필드라 더해야 한다. Codex 의 cached_input_tokens 는 input_tokens 에 이미 포함되므로 더하지 않는다.
+  const input=n(u.input??u.input_tokens??u.prompt_tokens??u.promptTokenCount??u.promptTokens)+n(u.cache_read_input_tokens)+n(u.cache_creation_input_tokens);
   const output=n(u.output??u.output_tokens??u.completion_tokens??u.candidatesTokenCount??u.outputTokens);
   return {input,output};
 }
 
 export class Store{
-  constructor(path){this.path=path;this.state={messages:[],sessions:{},nextId:1,usage:{},epochs:{}};}
+  constructor(path){this.path=path;this.state={messages:[],sessions:{},nextId:1,usage:{},epochs:{},seq:0};}
+  // 검수 V19: 메시지마다 단조 증가 seq. 화면은 seq 가 큰 쪽만 받아들여 늦게 온 옛 스냅샷이 최신 상태를 되돌리지 못한다.
+  bump(m){m.seq=++this.state.seq;return m;}
   // 파일 없음(ENOENT)만 "새 상태". 읽기 실패·JSON 손상은 던져서 빈 상태로 덮어쓰지 않는다 (GPT R05).
   async load(){
     let raw;try{raw=await readFile(this.path,'utf8');}catch(e){if(e.code==='ENOENT')return;throw Object.assign(new Error('state_unreadable'),{cause:e,file:String(this.path)});}
@@ -34,7 +37,8 @@ export class Store{
     }
     if(d.epochs)for(const v of Object.values(d.epochs))if(!isNat(v))throw bad('epochs');
     if(d.sessions)for(const v of Object.values(d.sessions))if(!(typeof v==='string'||v===null))throw bad('sessions');
-    this.state=d;if(!this.state.usage)this.state.usage={};if(!this.state.epochs)this.state.epochs={};if(!this.state.sessions)this.state.sessions={};
+    if(d.seq!==undefined&&!isNat(d.seq))throw bad('seq');
+    this.state=d;if(!this.state.usage)this.state.usage={};if(!this.state.epochs)this.state.epochs={};if(!this.state.sessions)this.state.sessions={};if(!Number.isSafeInteger(this.state.seq))this.state.seq=Math.max(0,...this.state.messages.map(m=>Number.isSafeInteger(m.seq)?m.seq:0));
   }
   // 저장은 항상 직렬화: 동시에 두 AI가 끝나도 tmp→rename 이 겹치지 않는다. 한 번 실패해도 다음 저장은 이어간다 (검수 FAIL 8). 파일은 0600 (검수 FAIL 9).
   save(){
@@ -46,8 +50,8 @@ export class Store{
     this._chain=(this._chain??Promise.resolve()).then(run,run);
     return this._chain;
   }
-  add(message){const m={id:this.state.nextId++,at:new Date().toISOString(),...message};if(typeof m.text==='string')m.hash=sha256(m.text);this.state.messages.push(m);return m;}
-  update(id,patch){const m=this.state.messages.find(x=>x.id===id);if(m)Object.assign(m,patch);return m;}
+  add(message){const m={id:this.state.nextId++,at:new Date().toISOString(),...message};if(typeof m.text==='string')m.hash=sha256(m.text);this.state.messages.push(m);return this.bump(m);}
+  update(id,patch){const m=this.state.messages.find(x=>x.id===id);if(m){Object.assign(m,patch);this.bump(m);}return m;}
   get(id){return this.state.messages.find(x=>x.id===id)??null;}
   session(adapterId){return this.state.sessions[adapterId]??null;}
   // 세대(epoch): "새 대화" 뒤에 늦게 끝난 이전 실행이 옛 세션을 되살리지 못하게 한다 (GPT R09). 시작 때 epoch 를 받아 두고 같은 세대일 때만 저장.

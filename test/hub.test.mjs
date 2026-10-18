@@ -207,10 +207,11 @@ async function startServer(adapters,env={}){
  const call=(p,o={})=>fetch(base+p,{...o,headers:{'content-type':'application/json',origin:base,...(o.headers??{})}});
  const PASSWORD='synthetic password 1';
  const session=r=>{const cookie=r.headers.get('set-cookie').split(';')[0];const as=async(p,o={})=>{const x=await call(p,{...o,headers:{cookie,...(o.headers??{})}});return {status:x.status,body:await x.json()};};return {cookie,as};};
- const setup=async(password=PASSWORD)=>{const r=await call('/api/setup',{method:'POST',body:JSON.stringify({password})});const body=await r.json();if(r.status!==200)return {status:r.status,body};return {status:200,body,...session(r)};};
+ const setupCode=async()=>(await readFile(path.join(dir,'data/setup-code'),'utf8')).trim();
+ const setup=async(password=PASSWORD,code=null)=>{const r=await call('/api/setup',{method:'POST',body:JSON.stringify({password,code:code??await setupCode().catch(()=>'')})});const body=await r.json();if(r.status!==200)return {status:r.status,body};return {status:200,body,...session(r)};};
  const login=async(password=PASSWORD)=>{const r=await call('/api/login',{method:'POST',body:JSON.stringify({password})});const body=await r.json();if(r.status!==200)return {status:r.status,body};return {status:200,body,...session(r)};};
  const admin=env.HUB_PASSWORD?await login(env.HUB_PASSWORD):await setup();assert.equal(admin.status,200,JSON.stringify(admin.body));
- const s={dir,srv,base,host,call,setup,login,admin,PASSWORD,log:()=>log};
+ const s={dir,srv,base,host,call,setup,login,admin,PASSWORD,setupCode,log:()=>log};
  s.auth=admin.as;   // 기본 호출자 = 주인 세션
  s.userDir=path.join(dir,'data/users','1');
  return s;

@@ -78,7 +78,9 @@ const live=new Set();      // 직접 자식이 아직 close 되지 않은 것들
 const pending=new Map();   // 종료 요청됐지만 아직 SIGKILL 을 보내지 않은 그룹: child → {timer, deadline} (직접 자식이 close 돼도 남는다 — GPT G02)
 export function spawnChild(command,args,opts){
   const child=spawn(command,args,{...opts,detached:GROUP});
-  live.add(child);child.once('close',()=>live.delete(child));
+  live.add(child);
+  // 검수 V12: 직접 자식이 정상 종료해도 같은 그룹의 손자가 남을 수 있다. 한 번 실행하는 CLI 에서 자식보다 오래 살 정당한 프로세스는 없으므로, close 뒤 잠시 후 그룹 전체에 SIGKILL (없으면 ESRCH, 무해).
+  child.once('close',()=>{live.delete(child);if(GROUP&&child.pid&&!child._killed){try{process.kill(-child.pid,'SIGKILL');}catch{}}});
   // exit 뒤 500ms 안에 close 가 없으면(손자가 stdout 을 잡고 있음) 파이프를 끊는다
   child.once('exit',()=>{const t=setTimeout(()=>{for(const st of [child.stdout,child.stderr])try{st?.destroy();}catch{}},500);t.unref?.();child.once('close',()=>clearTimeout(t));});
   return child;
@@ -195,7 +197,8 @@ export function runAdapter(adapter,{prompt,cwd,session=null,timeoutMs=900000,onC
       // R3: 증거 보존이 요구된 실행에서 보존이 실패하면 성공으로 확정하지 않는다. 답변 본문은 메모리 결과로 돌려주되 오류로 표시.
       if(evidenceDir&&evidenceError)return reject(Object.assign(new Error(evidenceError),{...base,...(parsed??{})}));
       if(cancelled)return reject(Object.assign(new Error('cancelled'),base));
-      if(code!==0)return reject(Object.assign(new Error(timedOut?'cli_timeout':'cli_exit_'+(code??signal_)),base));
+      if(timedOut)return reject(Object.assign(new Error('cli_timeout'),{...base,partialText:parsed?.text??null}));   // 검수 V11: SIGTERM 을 받고 exit 0 으로 끝내도 시간 초과는 성공이 아니다
+      if(code!==0)return reject(Object.assign(new Error('cli_exit_'+(code??signal_)),base));
       if(parseError)return reject(Object.assign(new Error('parse_failed'),{...base,parseFailed:true}));
       resolve({...parsed,...base});
     };
@@ -251,14 +254,14 @@ export const AUTH_PARSERS={
 // JSON 파서(claude)는 stdout 만 — stderr 경고가 섞이면 JSON 이 깨지므로 합치지 않는다. 텍스트 행 파서(codex)는 stdout 다음 stderr 를 이어 붙여 본다.
 // 어댑터 authCheck.output 으로 덮어쓸 수 있다: 'stdout' | 'stderr' | 'both'.
 export const AUTH_PARSER_STREAMS={'claude-json':'stdout','codex-text':'both','mock-json':'stdout'};
-export function checkAuth(adapter,parentEnv=process.env,extraEnv={},signal=null){
+export function checkAuth(adapter,parentEnv=process.env,extraEnv={},signal=null,cwd=undefined){   // cwd: 실행과 같은 작업 폴더를 주면 프로젝트 설정(.claude/settings.json 등)까지 같은 조건으로 판정 (검수 V09)
   const check=adapter.authCheck;
   if(!check||!Array.isArray(check.args)||!AUTH_PARSERS[check.parser])return Promise.resolve({id:adapter.id,state:'unverified',reason:'no_auth_check_configured'});
   const streams=check.output??AUTH_PARSER_STREAMS[check.parser]??'stdout';
   return new Promise(resolve=>{
     const {env}=buildChildEnv(parentEnv,adapter,extraEnv);
     let child;
-    try{child=spawnChild(adapter.command,fill(check.args,{root:ROOT}),{env,stdio:['ignore','pipe','pipe']});}
+    try{child=spawnChild(adapter.command,fill(check.args,{root:ROOT}),{env,cwd,stdio:['ignore','pipe','pipe']});}
     catch{return resolve({id:adapter.id,state:'unverified',reason:'spawn_failed'});}
     const out=collector(),err=collector();
     child.stdout.on('data',d=>out.push(d));child.stderr.on('data',d=>err.push(d));
@@ -282,8 +285,12 @@ export function checkAuth(adapter,parentEnv=process.env,extraEnv={},signal=null)
 // 사용자가 화면에서 입력한 텍스트(예: 붙여넣을 인증 코드)는 stdin 으로 전달한다. 원문 출력 전체는 사용자 폴더의 증거 파일(0600)에만 남는다.
 const URL_RE=/https?:\/\/[^\s'"<>)\]]+/g;
 const CODE_RE=/\b[A-Z0-9]{4,5}-[A-Z0-9]{4,5}\b/g;
+// 검수 V10: URL 의 #프래그먼트는 통째로 버린다(implicit flow 토큰이 실리는 자리). 쿼리에 access/refresh/id 토큰 키가 있으면 그 URL 은 화면에 안 보낸다.
+// OAuth authorize URL 의 code_challenge·state 같은 정상 파라미터는 로그인에 필요하므로 그대로 둔다.
+const TOKEN_QUERY_RE=/[?&](access_token|refresh_token|id_token|token|api_key|apikey|secret)=/i;
+export function sanitizeLoginUrl(u){const noFrag=u.split('#')[0];if(TOKEN_QUERY_RE.test(noFrag))return null;return noFrag;}
 export function extractLoginHints(text){
-  const urls=[...new Set((text.match(URL_RE)??[]).map(u=>u.replace(/[.,;]+$/,'')))];
+  const urls=[...new Set((text.match(URL_RE)??[]).map(u=>sanitizeLoginUrl(u.replace(/[.,;]+$/,''))).filter(Boolean))];
   const codes=[...new Set(text.match(CODE_RE)??[])];
   return {urls,codes};
 }
@@ -319,7 +326,7 @@ export function startLogin(adapter,{cwd,parentEnv=process.env,extraEnv={},timeou
       if(evidenceDir){try{evidence=await writeEvidence(evidenceDir,{stdoutBytes:o.bytes,stderrBytes:e.bytes,meta:{adapter:adapter.id,kind:'login',command:adapter.command,args,exitCode:code,signal,timedOut,elapsedMs:Date.now()-startedAt,envBlockedNames:blockedNames}});}catch(x){evidenceError='evidence_write_failed';}}
       const h=extractLoginHints(combined);
       // R3: 증거 저장 실패는 로그인에서도 성공이 아니다 (검수 FAIL 3)
-      const errCode=evidenceDir&&evidenceError?evidenceError:code===0?null:(timedOut?'login_timeout':'login_exit_'+(code??signal));
+      const errCode=evidenceDir&&evidenceError?evidenceError:timedOut?'login_timeout':code===0?null:'login_exit_'+(code??signal);   // 검수 V11: 시간 초과가 exit 0 보다 우선
       resolve({status:errCode===null?'done':'error',error:errCode,exitCode:code,signal,timedOut,evidence,evidenceError,...h});
     });
   });

@@ -15,7 +15,7 @@ const label=id=>ad(id)?.label??id;
 const color=id=>ad(id)?.color??'#888';
 const initial=a=>(a.label??a.id??'?').replace(/\s*\(.*\)/,'').trim()[0]?.toUpperCase()??'?';
 const connected=a=>a.auth?.state==='subscription';
-const ERR={login_required:'로그인이 필요합니다',login_invalid:'비밀번호가 맞지 않습니다',too_many_attempts:'실패가 많아 15분간 잠겼습니다',password_too_short:'비밀번호는 10자 이상',already_set:'이미 비밀번호가 있습니다',login_already_running:'이미 연결 진행 중',login_not_configured:'이 AI 는 화면 연결 명령이 아직 없습니다',budget_exceeded:'이번 달 토큰 상한에 도달 — 메뉴 > 토큰 예산에서 조정',workers_required:'팀원이 될 AI 가 더 연결돼야 합니다',lead_required:'팀장 AI 를 먼저 지정하세요',plan_parse_failed:'팀장이 계획을 JSON 으로 내지 않아 분배를 멈췄습니다',budget_invalid:'상한은 0 이상의 숫자',cancelled:'취소됨',text_too_long:'글자 수 상한 초과',file_too_large:'파일 크기 상한 초과',state_corrupt:'대화 저장 파일이 손상됨',state_unreadable:'대화 저장 파일을 읽을 수 없음',not_logged_in:'아직 연결되지 않음 — 참여자에서 연결하세요',api_key_auth_detected:'API 키 모드라 차단됨 (구독 로그인만 허용)',third_party_auth_detected:'서드파티 인증이라 차단됨',auth_unverified:'인증 상태를 확인할 수 없어 차단됨',cli_not_found:'CLI 가 서버에 설치돼 있지 않음',cli_timeout:'시간 초과',all_tasks_failed:'팀원 작업이 전부 실패해 종합을 건너뜀'};
+const ERR={setup_code_invalid:'설정 코드가 맞지 않습니다 — 서버 로그(또는 data/setup-code)의 코드를 넣으세요',persist_failed:'답은 받았지만 저장에 실패했습니다 (서버 디스크 확인)',interrupted:'서버가 재시작되어 중단됨',body_too_large:'요청이 너무 큽니다',login_required:'로그인이 필요합니다',login_invalid:'비밀번호가 맞지 않습니다',too_many_attempts:'실패가 많아 15분간 잠겼습니다',password_too_short:'비밀번호는 10자 이상',already_set:'이미 비밀번호가 있습니다',login_already_running:'이미 연결 진행 중',login_not_configured:'이 AI 는 화면 연결 명령이 아직 없습니다',budget_exceeded:'이번 달 토큰 상한에 도달 — 메뉴 > 토큰 예산에서 조정',workers_required:'팀원이 될 AI 가 더 연결돼야 합니다',lead_required:'팀장 AI 를 먼저 지정하세요',plan_parse_failed:'팀장이 계획을 JSON 으로 내지 않아 분배를 멈췄습니다',budget_invalid:'상한은 0 이상의 숫자',cancelled:'취소됨',text_too_long:'글자 수 상한 초과',file_too_large:'파일 크기 상한 초과',state_corrupt:'대화 저장 파일이 손상됨',state_unreadable:'대화 저장 파일을 읽을 수 없음',not_logged_in:'아직 연결되지 않음 — 참여자에서 연결하세요',api_key_auth_detected:'API 키 모드라 차단됨 (구독 로그인만 허용)',third_party_auth_detected:'서드파티 인증이라 차단됨',auth_unverified:'인증 상태를 확인할 수 없어 차단됨',cli_not_found:'CLI 가 서버에 설치돼 있지 않음',cli_timeout:'시간 초과',all_tasks_failed:'팀원 작업이 전부 실패해 종합을 건너뜀'};
 const msg=e=>ERR[e]??e;
 const AUTH_KO={subscription:'연결됨',api_key:'API 키 모드 — 차단',third_party:'서드파티 — 차단',not_logged_in:'연결 필요',unverified:'확인 안 됨'};
 
@@ -31,16 +31,17 @@ const toast=t=>{document.querySelectorAll('.toast').forEach(x=>x.remove());const
 let setupMode=false;
 function showGate(info){
   setupMode=!!info.setupRequired;
+  es?.close();es=null;   // 검수 V01: 게이트로 나가면 스트림도 닫는다
   $('#gate').hidden=false;$('#app').hidden=true;
   $('#gate-title').textContent=setupMode?'AI 오피스 만들기':'AI 오피스';
-  $('#gate-hint').textContent=setupMode?'이 서버의 주인 비밀번호를 정하세요. 이 비밀번호로만 들어올 수 있습니다.':'';
-  $('#f-password2').hidden=!setupMode;$('#gate-form input[name=password]').autocomplete=setupMode?'new-password':'current-password';
+  $('#gate-hint').textContent=setupMode?'서버 로그(콘솔)에 찍힌 설정 코드와 주인 비밀번호를 넣으세요. 이 비밀번호로만 들어올 수 있습니다.':'';
+  $('#f-password2').hidden=!setupMode;$('#f-code').hidden=!setupMode;$('#gate-form input[name=password]').autocomplete=setupMode?'new-password':'current-password';
   $('#gate-form button').textContent=setupMode?'만들고 들어가기':'들어가기';$('#gate-msg').textContent='';
 }
 $('#gate-form').onsubmit=async e=>{
   e.preventDefault();const f=new FormData(e.target);const password=f.get('password');
   if(setupMode&&password!==f.get('password2')){$('#gate-msg').textContent='비밀번호 확인이 다릅니다';return;}
-  try{await api(setupMode?'/api/setup':'/api/login',{method:'POST',body:JSON.stringify({password})});e.target.reset();await boot();}
+  try{await api(setupMode?'/api/setup':'/api/login',{method:'POST',body:JSON.stringify(setupMode?{password,code:String(f.get('code')??'').trim()}:{password})});e.target.reset();await boot();}
   catch(x){$('#gate-msg').textContent=msg(x.message);}
 };
 
@@ -114,7 +115,7 @@ function renderPeople(){
   const list=$('#people-list');
   list.innerHTML=state.adapters.map(a=>{
     const st=a.auth?.state;const isLead=state.lead===a.id;
-    const status=st==='subscription'?`<span class="pstatus ok">● ${AUTH_KO[st]}${a.auth.subscriptionType?' · '+esc(a.auth.subscriptionType):''}</span>`:st?`<span class="pstatus ${st==='not_logged_in'?'off':'bad'}">○ ${AUTH_KO[st]??st}</span>`:`<span class="pstatus off">○ 상태 확인 전</span>`;
+    const status=!a.auth?`<span class="pstatus off">○ 확인 중<span class="dots"></span></span>`:st==='subscription'?`<span class="pstatus ok">● ${AUTH_KO[st]}${a.auth.subscriptionType?' · '+esc(a.auth.subscriptionType):''}</span>`:`<span class="pstatus ${st==='not_logged_in'?'off':'bad'}">○ ${AUTH_KO[st]??st}</span>`;
     const running=a.login?.status==='running';
     return `<div class="person" data-id="${a.id}" style="--ai-color:${esc(a.color)}"><div class="av ${connected(a)?'':'off'}">${esc(initial(a))}</div><div class="info"><div class="pname">${esc(a.label)}${isLead?'<span class="lead-tag">팀장</span>':''}</div><div class="prole">${esc(a.roleHint||'')}</div>${status}<div class="pacts">${a.canLogin&&!running?`<button class="btn small primary p-login">${connected(a)?'다시 연결':'연결하기'}</button>`:''}${!a.canLogin?`<span class="hint small">이 AI 는 아직 화면 연결을 지원하지 않습니다</span>`:''}${connected(a)?`<button class="btn small p-lead">${isLead?'팀장 해제':'팀장으로'}</button><button class="btn small p-reset" title="이 AI 의 이어가기 세션을 새로 시작">새 대화</button>`:''}</div><div class="login-slot">${loginBoxHtml(a)}</div></div></div>`;
   }).join('')||'<p class="hint">설정된 AI 가 없습니다 (config/adapters.json)</p>';
@@ -142,11 +143,16 @@ function renderAll(){renderHeader();renderTimeline();renderPeople();renderFiles(
 
 // ---- 보내기: 멘션 → 팀장 → 모두 ----
 const ALIAS={claude:['클로드','claude','클'],codex:['코덱스','codex','지피티','챗지피티','gpt','chatgpt','오픈ai','openai'],gemini:['제미나이','제미니','gemini','구글','google'],grok:['그록','grok']};
+// 검수 V20: 문장 시작 또는 공백 뒤의 @만 멘션. 별칭 전체 일치 또는 별칭 + 허용된 조사(에게·한테·야·님·아·씨)만. 이메일·패키지명(@scope/x)은 걸리지 않는다.
+const PARTICLES=['에게','한테','야','님','아','씨','에게도','한테도'];
 function parseMentions(text){
   const ids=new Set();
-  for(const m of text.matchAll(/@([^\s@,.!?:;]+)/g)){
-    const w=m[1].toLowerCase();
-    for(const a of state.adapters){const names=[a.id,a.label.toLowerCase(),...(ALIAS[a.id]??[])].map(x=>x.toLowerCase());if(names.some(n=>w===n||w.startsWith(n)||n.startsWith(w)&&w.length>=2))ids.add(a.id);}
+  for(const m of String(text).matchAll(/(^|\s)@([^\s@,.!?:;/]+)/g)){
+    const w=m[2].toLowerCase();
+    for(const a of state.adapters){
+      const names=[a.id,a.label,a.label.replace(/\s*\(.*\)/,''),...(ALIAS[a.id]??[])].map(x=>x.toLowerCase());
+      if(names.some(n=>w===n||PARTICLES.some(p=>w===n+p)))ids.add(a.id);
+    }
   }
   return [...ids];
 }
@@ -199,16 +205,19 @@ $('#m-logout').onclick=async()=>{$('#menu').close();try{await api('/api/logout',
 // ---- 시작 · SSE ----
 function mergeSnapshot(snap){
   const byId=new Map(state.messages.map(m=>[m.id,m]));
-  for(const m of snap.messages??[]){const cur=byId.get(m.id);if(cur&&cur.status&&cur.status!=='running'&&m.status==='running')continue;byId.set(m.id,m);}
+  for(const m of snap.messages??[]){const cur=byId.get(m.id);if(cur&&newer(cur,m))continue;byId.set(m.id,m);}
   state.messages=[...byId.values()].sort((a,b)=>a.id-b.id);
   for(const id of Object.keys(partials))if(!state.messages.some(m=>m.id===Number(id)&&m.status==='running'))delete partials[id];
 }
+// 검수 V19: seq 가 있으면 seq 로, 없으면(옛 저장분) terminal→running 회귀만 막는다
+const TERMINAL=new Set(['done','error','blocked','cancelled']);
+function newer(cur,m){if(Number.isSafeInteger(cur.seq)&&Number.isSafeInteger(m.seq))return cur.seq>m.seq;return TERMINAL.has(cur.status)&&cur.status!==m.status;}   // seq 없음: 끝난 상태는 다른 상태로 되돌리지 않는다
 function applyState(s){state.adapters=s.adapters??state.adapters;if(s.lead!==undefined)state.lead=s.lead;if(s.messages)mergeSnapshot(s);if(s.files)state.files=s.files;if(s.budget)state.budget=s.budget;if(s.memory)state.memory=s.memory;if(s.user)state.user=s.user;}
 function connect(){
   es?.close();es=new EventSource('/api/events');
   es.onopen=async()=>{$('#conn').textContent='연결됨';$('#conn').className='conn ok';try{const snap=await api('/api/state');applyState(snap);renderAll();}catch{}};
   es.onerror=()=>{$('#conn').textContent='연결 끊김 — 재시도 중';$('#conn').className='conn bad';};
-  es.addEventListener('message',e=>{const m=JSON.parse(e.data);const i=state.messages.findIndex(x=>x.id===m.id);const isNew=i<0;i>=0?state.messages[i]=m:state.messages.push(m);if(m.status!=='running')delete partials[m.id];renderTimeline();if(isNew)scrollBottom();});
+  es.addEventListener('message',e=>{const m=JSON.parse(e.data);const i=state.messages.findIndex(x=>x.id===m.id);const isNew=i<0;if(i>=0&&newer(state.messages[i],m))return;i>=0?state.messages[i]=m:state.messages.push(m);if(m.status!=='running')delete partials[m.id];renderTimeline();if(isNew)scrollBottom();});
   es.addEventListener('partial',e=>{const p=JSON.parse(e.data);partials[p.id]=p;const el=document.getElementById('m'+p.id);if(!el){renderTimeline();return;}const t=el.querySelector('.partial'),g=el.querySelector('.progress');const prog=`수신 중 … ${(p.bytes/1024).toFixed(1)}KB · ${(p.elapsedMs/1000).toFixed(0)}s`;if(t&&p.partial){t.textContent=p.partial;if(g)g.textContent=prog;}else renderTimeline();});
   es.addEventListener('budget',e=>{state.budget=JSON.parse(e.data);renderBadges();});
   es.addEventListener('memory',e=>{state.memory=JSON.parse(e.data);renderBadges();});

@@ -1,4 +1,4 @@
-# AI 오피스 v0.7 — 구독 중인 AI 들을 단톡방 하나에서 (1인용 · 클라우드)
+# AI 오피스 v0.7.1 — 구독 중인 AI 들을 단톡방 하나에서 (1인용 · 클라우드)
 
 내 서버 한 대에 띄워 두고, 폰·PC 브라우저로 접속해 **내가 구독 중인 AI 들과 단톡방처럼** 대화합니다. 참여자는 내가 연결한 AI 수만큼: Claude 만 있으면 1:1, ChatGPT(Codex) 까지 연결하면 3인 방.
 
@@ -15,8 +15,9 @@ v0.6 의 다인용(계정·초대·관리자)은 뺐습니다. 서버 = 사무�
 1. 이 폴더를 GitHub 저장소로 올립니다 (private 권장).
 2. Railway → New Project → Deploy from GitHub repo → 이 저장소. `Dockerfile` 과 `railway.json` 을 자동으로 씁니다.
 3. **Variables** 에 추가:
-   - `HUB_PASSWORD` = 들어올 때 쓸 비밀번호 (10자 이상). 안 넣으면 첫 화면에서 정합니다.
-   - (선택) `HUB_MONTHLY_TOKENS` 대신 화면 메뉴에서 예산을 정해도 됩니다.
+   - `HUB_PASSWORD` = 들어올 때 쓸 비밀번호 (10~256자). 잘못된 값이면 서버가 시작하지 않습니다.
+   - 안 넣으면 서버 로그에 **1회용 설정 코드**가 찍힙니다. 첫 화면 "AI 오피스 만들기"에 그 코드 + 비밀번호를 넣어야 주인이 됩니다 (코드 없이는 아무도 못 만듭니다).
+   - (선택) `HUB_MONTHLY_TOKENS` 월 토큰 상한. 화면 메뉴에서 정해도 됩니다.
 4. **Volume** 추가: mount path `/app/data`. ⚠️ 이게 없으면 재배포 때마다 AI 로그인·대화가 날아갑니다.
 5. Settings → Networking → **Generate Domain**. 그 주소를 폰에서 열면 끝. "홈 화면에 추가" 하면 앱처럼 열립니다.
 
@@ -57,9 +58,11 @@ v0.6 의 다인용(계정·초대·관리자)은 뺐습니다. 서버 = 사무�
 
 | 변수 | 뜻 | 기본 |
 |---|---|---|
-| `HUB_PASSWORD` | 최초 비밀번호 (이미 있으면 무시) | 없음 → 화면에서 설정 |
+| `HUB_PASSWORD` | 최초 비밀번호 (이미 있으면 무시, 잘못되면 시작 거부) | 없음 → 로그의 설정 코드로 화면에서 설정 |
+| `HUB_MONTHLY_TOKENS` | 월 토큰 상한 (0 이상 정수) | 0 = 무제한 |
 | `PORT` / `HOST` | 수신 포트·주소 | Docker: 8787 / 0.0.0.0 |
 | `HUB_ALLOWED_HOSTS` | Host 허용 목록(콤마) 또는 `*` | Docker: `*` |
+| `HUB_TRUST_PROXY` | `1` 이면 x-forwarded-for/proto 를 믿음 (플랫폼 프록시 뒤에서만) | Docker: `1` |
 
 `config/adapters.json`: AI 목록·명령·파서·역할 한 줄(`roleHint`). 새 AI 는 항목 하나 추가.
 
@@ -73,7 +76,37 @@ npm start         # http://127.0.0.1:8787
 
 구조: `src/server.mjs`(HTTP+SSE, 게이트, 오케스트레이터, CLI 로그인 중계) · `src/owner.mjs`(비밀번호·세션) · `src/adapters/`(CLI 실행·파싱·인증 확인) · `src/store.mjs`(대화·사용량) · `public/`(단톡방 화면).
 
-## 7. 아직 없는 것 (v0.8 후보)
+## 7. v0.7.0 → v0.7.1 (독립 검수 V01~V21 반영)
+
+21건 전부 수정. 검수자의 재현 스크립트를 수정본에 다시 돌려 전부 반전됨을 확인했고, 같은 시나리오를 `test/v071-audit.test.mjs` 16개로 고정했다 (테스트 60 → 76).
+
+| ID | 고친 것 |
+| --- | --- |
+| V01 | 비밀번호 변경 시 열린 SSE 전부 종료, SSE 는 20초마다 세션 유효성 재확인, 화면도 게이트로 나가면 스트림 닫음 |
+| V02 | `owner.json` 에 `authVersion` 을 비밀번호 해시와 한 번에 커밋. 세션은 발급 당시 버전을 품고, 버전이 다르면 무효 (세션 파일 정리 실패와 무관) |
+| V03 | 존재하는 `owner.json` 은 salt 16B·hash 64B·createdAt·authVersion 이 전부 유효해야 함. 아니면 `accounts_corrupt` 로 시작 거부 |
+| V04 | 잘못된 `HUB_PASSWORD` 면 시작 거부. 비밀번호 없으면 1회용 설정 코드(로그·`data/setup-code`) 없이는 `/api/setup` 403. `/healthz` 는 `{ok:true}` 만 |
+| V05 | `HUB_TRUST_PROXY=1` 일 때만 `x-forwarded-for`(잠금 키)·`x-forwarded-proto`(Secure 쿠키) 신뢰 |
+| V06 | 본문 리더가 청크마다 누적 바이트 검사 → JSON 64KB, 업로드 `limits.uploadBytes` 초과 시 즉시 413. 비밀번호 256자 상한 |
+| V07 | `COPY workspace` 제거 (작업 폴더는 서버가 `data/users/1/workspace` 에 만든다) |
+| V08 | 엔트리포인트가 root 로 `/app/data` 소유권을 맞춘 뒤 `gosu` 로 node(1000) 로 내려감. `tini` 가 PID 1 |
+| V09 | 인증 확인을 실행과 같은 작업 폴더(cwd)에서 수행 → 프로젝트 설정으로 인증 방식이 갈라지지 않음 |
+| V10 | 로그인 URL 의 `#프래그먼트` 제거, 쿼리에 access/refresh/id 토큰 키가 있으면 화면에 안 보냄 (OAuth state·code_challenge 는 유지) |
+| V11 | 시간 초과가 exit 0 보다 우선 → `cli_timeout` / `login_timeout` |
+| V12 | 직접 자식이 끝나면 프로세스 그룹에 즉시 SIGKILL (한 번 실행하는 CLI 에서 자식보다 오래 살 정당한 손자는 없음) |
+| V13 | 완료 상태는 `state.json` 저장이 끝난 뒤에만 알림. 저장 실패 → `persist_failed` 오류 (본문은 메모리에만, `unstoredAnswer`) |
+| V14 | 재시작 시 남은 `running` 메시지는 `interrupted` 오류로 닫음 (자동 재실행 없음) |
+| V15 | 컨텍스트 생성 때 인증 상태를 비동기로 갱신 → 재배포 뒤에도 참여자가 바로 "연결됨". 확인 전엔 "확인 중" |
+| V16 | 월 상한은 API·`setBudget`·로드·`HUB_MONTHLY_TOKENS` 모두 `Number.isSafeInteger(n) && n>=0` |
+| V17 | Claude `cache_read/cache_creation_input_tokens` 를 입력에 합산 (Codex `cached_input_tokens` 는 중복이라 제외) |
+| V18 | 같은 AI 의 일반 대화는 어댑터별 직렬 큐. 팀장 분배의 ② 작업은 세션을 쓰지도 남기지도 않음 |
+| V19 | 메시지마다 단조 증가 `seq`. 화면은 seq 가 큰 쪽만 받고, seq 없는 옛 데이터는 끝난 상태를 되돌리지 않음 |
+| V20 | 멘션은 문장 시작/공백 뒤 `@` + 별칭 전체 일치(+에게·한테·야·님·아·씨). 이메일·`@scope/pkg` 제외 |
+| V21 | Node 22.22.0, claude-code 2.1.302, codex 0.163.0, gemini-cli 0.64.0 고정 |
+
+**검수가 지적했지만 코드로 못 닫은 것**: 실제 Claude/Codex 의 비 TTY 로그인 완주, Railway 프록시 뒤 SSE, 재배포 후 2턴 이어가기는 실제 배포에서만 확인 가능 (테스트 가이드 2·3단계). TTY 가 꼭 필요하면 PTY 중계(`node-pty`)를 v0.8 에서.
+
+## 8. 아직 없는 것 (v0.8 후보)
 
 - Gemini 화면 연결 (OAuth 비브라우저 흐름 확인 필요) · Grok
 - 승인 큐: "돈 쓰기·삭제 전엔 물어봐" 를 방 안의 [승인]/[거부] 버튼으로

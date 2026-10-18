@@ -99,7 +99,8 @@ console.log(JSON.stringify({text:'OK',session:'fixture-session',usage:{input:1,o
     const res=await fetch(base+p,{method,headers:{origin:base,'content-type':'application/json',...(cookie?{cookie}:{})},...(body!==undefined?{body:JSON.stringify(body)}:{})});
     return {status:res.status,headers:res.headers,data:await res.json()};
   };
-  const r0=await call('/api/setup',{method:'POST',body:{password:'synthetic-password'}});assert.equal(r0.status,200);
+  const code=(await readFile(path.join(d,'data/setup-code'),'utf8')).trim();
+  const r0=await call('/api/setup',{method:'POST',body:{password:'synthetic-password',code}});assert.equal(r0.status,200);
   const user={id:1,cookie:r0.headers.get('set-cookie').split(';')[0]};
   const uc=(p,o={})=>call(p,{...o,cookie:user.cookie});
   const userDir=path.join(d,'data/users',String(user.id));

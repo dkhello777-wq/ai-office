@@ -1,0 +1,177 @@
+// v0.7.1: 독립 검수 V01~V21 회귀 테스트. 각 테스트는 검수자의 재현 시나리오를 그대로 옮긴 것이라, 패치 전 코드에서는 실패한다.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {spawn} from 'node:child_process';
+import http from 'node:http';
+import {mkdtemp,writeFile,readFile,mkdir,rm} from 'node:fs/promises';
+import os from 'node:os';import path from 'node:path';
+import {Owner,validBudgetTokens} from '../src/owner.mjs';
+import {Store,normalizeUsage} from '../src/store.mjs';
+import {runAdapter,checkAuth,extractLoginHints,sanitizeLoginUrl,ROOT,terminateAll} from '../src/adapters/index.mjs';
+const MOCK=new URL('../src/adapters/mock-cli.mjs',import.meta.url).pathname;
+const tmp=()=>mkdtemp(path.join(os.tmpdir(),'hub71-'));
+const PASS='synthetic password 1';
+async function startServer(adapters,env={}){
+ const dir=await tmp();
+ await mkdir(path.join(dir,'config'),{recursive:true});
+ await writeFile(path.join(dir,'config/adapters.json'),JSON.stringify({adapters,timeoutMs:30000,port:0,host:'127.0.0.1',allowedHosts:[],authCacheMs:0,users:{dir:'data/users'},loginTimeoutMs:20000}));
+ await new Promise((res,rej)=>{const c=spawn('cp',['-r',path.join(ROOT,'src'),path.join(ROOT,'public'),dir]);c.on('close',code=>code===0?res():rej(Error('cp')));});
+ const port=20787+Math.floor(Math.random()*2000);
+ const srv=spawn('node',['src/server.mjs'],{cwd:dir,env:{PATH:process.env.PATH,HOME:process.env.HOME,PORT:String(port),...env},stdio:['ignore','pipe','pipe']});
+ let log='';srv.stderr.on('data',d=>log+=d);
+ const started=await new Promise(r=>{srv.stdout.on('data',d=>{log+=d;if(String(d).includes('AI Hub'))r(true);});srv.on('exit',()=>r(false));});
+ const base=`http://127.0.0.1:${port}`;
+ const call=(p,o={})=>fetch(base+p,{...o,headers:{'content-type':'application/json',origin:base,...(o.headers??{})}});
+ const session=r=>{const cookie=r.headers.get('set-cookie').split(';')[0];const as=async(p,o={})=>{const x=await call(p,{...o,headers:{cookie,...(o.headers??{})}});return {status:x.status,body:await x.json()};};return {cookie,as};};
+ const code=async()=>(await readFile(path.join(dir,'data/setup-code'),'utf8')).trim();
+ const setup=async(password=PASS,c)=>{const r=await call('/api/setup',{method:'POST',body:JSON.stringify({password,code:c??await code()})});const body=await r.json();return r.status===200?{status:200,body,...session(r)}:{status:r.status,body};};
+ const login=async(password=PASS,headers={})=>{const r=await call('/api/login',{method:'POST',headers,body:JSON.stringify({password})});const body=await r.json();return r.status===200?{status:200,body,...session(r)}:{status:r.status,body};};
+ return {dir,srv,base,port,call,setup,login,code,started,log:()=>log,userDir:path.join(dir,'data/users','1')};
+}
+const mockAdapter=(id,extra={})=>({id,label:id,color:'#888',command:'node',args:[MOCK],resumeArgs:['--session','{session}'],parse:'mock-json',enabled:true,envAllow:['MOCK_AUTH'],authCheck:{args:[MOCK,'--auth-status'],parser:'mock-json'},login:{args:[MOCK,'--login']},...extra});
+const wait=async(as,n,ms=8000)=>{const end=Date.now()+ms;while(Date.now()<end){const st=(await as('/api/state')).body;if(st.messages.filter(m=>m.role==='assistant'&&m.status!=='running').length>=n)return st;await new Promise(r=>setTimeout(r,80));}throw Error('timeout');};
+
+test('V04: invalid HUB_PASSWORD refuses to start; setup needs the one-time code; /healthz exposes nothing',async t=>{
+ const bad=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_PASSWORD:'short'});t.after(()=>bad.srv.kill());
+ assert.equal(bad.started,false);assert.match(bad.log(),/HUB_PASSWORD/);
+ const s=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_ALLOWED_HOSTS:'*'});t.after(()=>s.srv.kill());
+ assert.deepEqual(await (await s.call('/healthz')).json(),{ok:true});
+ // Origin/Host 를 맞춘 외부 클라이언트도 코드 없이는 못 만든다
+ const raw=await new Promise((resolve,reject)=>{const req=http.request({host:'127.0.0.1',port:s.port,path:'/api/setup',method:'POST',headers:{host:'evil.example',origin:'http://evil.example','content-type':'application/json'}},r=>{let d='';r.on('data',c=>d+=c);r.on('end',()=>resolve({status:r.statusCode,body:JSON.parse(d)}));});req.on('error',reject);req.end(JSON.stringify({password:'attacker password 1'}));});
+ assert.equal(raw.status,403);assert.equal(raw.body.error,'setup_code_invalid');
+ assert.equal((await s.setup(PASS,'wrong-code')).status,403);
+ const ok=await s.setup();assert.equal(ok.status,200);
+ await assert.rejects(readFile(path.join(s.dir,'data/setup-code')),'code file removed after setup');
+ assert.equal((await s.setup(PASS,'any')).status,409);
+});
+test('V01+V02: password change closes old SSE and old sessions stay dead even if sessions.json cannot be written',async t=>{
+ const s=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription'});t.after(()=>s.srv.kill());
+ const a=await s.setup();
+ const es=await fetch(s.base+'/api/events',{headers:{cookie:a.cookie}});const reader=es.body.getReader();await reader.read();
+ await mkdir(path.join(s.dir,'data/sessions.json.tmp'));   // 세션 파일 저장을 실패시킨다
+ const r=await a.as('/api/settings/password',{method:'POST',body:JSON.stringify({current:PASS,next:'another long password'})});assert.equal(r.status,200);
+ const drain=(async()=>{while(true){const x=await reader.read();if(x.done)return true;}})();   // 재시작 직후 state 이벤트 등이 먼저 올 수 있으니 done 까지 읽는다
+ const closed=await Promise.race([drain,new Promise(r=>setTimeout(()=>r('timeout'),3000))]);assert.equal(closed,true,'old SSE closed');
+ assert.equal((await a.as('/api/state')).status,401);
+ const o=new Owner(path.join(s.dir,'data'));await o.load();assert.equal(o.authVersion,2);
+ assert.equal(o.userForToken(a.cookie.split('=')[1]),null,'old token invalid after reload');
+ await rm(path.join(s.dir,'data/sessions.json.tmp'),{recursive:true});
+ assert.equal((await s.login('another long password')).status,200);
+});
+test('V03+V16: corrupt or empty owner.json fails closed; budget rejects unsafe numbers in API and in setBudget',async t=>{
+ const d=await tmp();
+ await writeFile(path.join(d,'owner.json'),JSON.stringify({salt:'',hash:'',createdAt:new Date().toISOString()}));
+ const o=new Owner(d);await assert.rejects(o.load(),/accounts_corrupt/);
+ const d2=await tmp();const o2=new Owner(d2);await o2.load();await o2.setup({password:PASS});
+ assert.equal(await o2.setBudget({monthlyTokens:1e100}),false);assert.equal(await o2.setBudget({monthlyTokens:5.5}),false);assert.equal(await o2.setBudget({monthlyTokens:1000}),true);
+ const o3=new Owner(d2);await o3.load();assert.equal(o3.user.budget.monthlyTokens,1000);
+ assert.equal(validBudgetTokens(-1),false);assert.equal(validBudgetTokens(0),true);
+ const s=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription'});t.after(()=>s.srv.kill());const a=await s.setup();
+ for(const v of [1e100,-5,'abc',true,1.5])assert.equal((await a.as('/api/settings/budget',{method:'POST',body:JSON.stringify({monthlyTokens:v})})).status,400,String(v));
+ assert.equal((await a.as('/api/settings/budget',{method:'POST',body:JSON.stringify({monthlyTokens:'2000'})})).status,200);
+ const bad=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_MONTHLY_TOKENS:'1e100'});t.after(()=>bad.srv.kill());assert.equal(bad.started,false);
+});
+test('V05: X-Forwarded-For is honoured only with HUB_TRUST_PROXY=1 (lockout per client, Secure cookie behind https proxy)',async t=>{
+ const s=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS,HUB_TRUST_PROXY:'1'});t.after(()=>s.srv.kill());
+ for(let i=0;i<10;i++)await s.login('wrong password!!',{'x-forwarded-for':'198.51.100.1'});
+ assert.equal((await s.login(PASS,{'x-forwarded-for':'198.51.100.1'})).status,429);
+ assert.equal((await s.login(PASS,{'x-forwarded-for':'203.0.113.2'})).status,200,'other client unaffected');
+ const r=await s.call('/api/login',{method:'POST',headers:{'x-forwarded-proto':'https','x-forwarded-for':'203.0.113.3',origin:'https://127.0.0.1:'+s.port},body:JSON.stringify({password:PASS})});
+ assert.equal(r.status,200);assert.match(r.headers.get('set-cookie'),/; Secure/);
+ const u=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS});t.after(()=>u.srv.kill());
+ const r2=await u.call('/api/login',{method:'POST',headers:{'x-forwarded-proto':'https',origin:'https://127.0.0.1:'+u.port},body:JSON.stringify({password:PASS})});
+ assert.equal(r2.status,403,'untrusted proxy header does not change scheme → origin mismatch');
+});
+test('V06: oversized JSON bodies are cut at the limit before parsing',async t=>{
+ const s=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS});t.after(()=>s.srv.kill());
+ const big=JSON.stringify({password:'x'.repeat(200*1024)});
+ const r=await s.call('/api/login',{method:'POST',body:big}).catch(e=>({status:'reset',error:e}));
+ assert.ok(r.status===413||r.status==='reset','got '+r.status);
+ const r2=await s.call('/api/login',{method:'POST',headers:{'content-length':String(10*1024*1024)},body:JSON.stringify({password:PASS})}).catch(e=>({status:'reset'}));
+ assert.ok(r2.status===413||r2.status==='reset','got '+r2.status);
+ assert.equal((await s.login()).status,200,'server still serves after oversized requests');
+});
+test('V09: auth check runs in the same cwd as the model (project settings cannot differ)',async()=>{
+ const d=await tmp();const f=path.join(d,'cli.mjs');
+ await writeFile(f,"import {existsSync} from 'node:fs';const mode=existsSync('local-api-mode')?'api_key':'claude.ai';console.log(JSON.stringify({loggedIn:true,authMethod:mode,apiProvider:'firstParty',subscriptionType:mode==='claude.ai'?'pro':null}));");
+ const ws=path.join(d,'ws');await mkdir(ws);await writeFile(path.join(ws,'local-api-mode'),'1');
+ const a={id:'x',command:'node',authCheck:{args:[f],parser:'claude-json'}};
+ assert.equal((await checkAuth(a,{PATH:process.env.PATH},{},null,ws)).state,'api_key');
+ assert.equal((await checkAuth(a,{PATH:process.env.PATH},{},null,d)).state,'subscription');
+});
+test('V10: login URLs lose fragments and token-bearing queries; OAuth state/code_challenge survive',()=>{
+ assert.deepEqual(extractLoginHints('Open https://auth.example/cb#access_token=secret now').urls,['https://auth.example/cb']);
+ assert.deepEqual(extractLoginHints('Open https://x.example/?access_token=abc').urls,[]);
+ assert.equal(sanitizeLoginUrl('https://claude.ai/oauth/authorize?code=true&client_id=1&state=xyz&code_challenge=abc'),'https://claude.ai/oauth/authorize?code=true&client_id=1&state=xyz&code_challenge=abc');
+});
+test('V11: a timed-out CLI that exits 0 is cli_timeout, not done',async()=>{
+ const d=await tmp();const f=path.join(d,'t.mjs');
+ await writeFile(f,"process.on('SIGTERM',()=>{console.log(JSON.stringify({text:'partial',session:'s'}));process.exit(0)});console.log('ready');setInterval(()=>{},1000);");
+ const err=await runAdapter({id:'t',command:'node',args:[f],parse:'mock-json'},{prompt:'hi',cwd:d,timeoutMs:250,evidenceDir:path.join(d,'ev')}).then(()=>null,e=>e);
+ assert.equal(err.message,'cli_timeout');assert.equal(err.timedOut,true);assert.equal(err.exitCode,0);
+});
+test('V12: a grandchild left behind by a normally exiting CLI is killed with its group',async()=>{
+ const d=await tmp();const bg=path.join(d,'bg.mjs');await writeFile(bg,'setInterval(()=>{},1000)');
+ const parent=path.join(d,'p.mjs');await writeFile(parent,`import {spawn} from 'node:child_process';const c=spawn(process.execPath,[${JSON.stringify(bg)}],{stdio:'ignore'});console.log(JSON.stringify({text:String(c.pid),session:'s'}));c.unref();`);
+ const r=await runAdapter({id:'p',command:'node',args:[parent],parse:'mock-json'},{prompt:'hi',cwd:d,timeoutMs:3000});const pid=Number(r.text);
+ await new Promise(r=>setTimeout(r,150));
+ let state=null;try{state=(await readFile(`/proc/${pid}/stat`,'utf8')).split(') ')[1]?.[0];}catch{}
+ assert.ok(state===null||state==='Z','grandchild not running (state '+state+')');
+ try{process.kill(pid,'SIGKILL');}catch{}
+});
+test('V13: when state.json cannot be written the answer is not reported as done',async t=>{
+ const s=await startServer([mockAdapter('mock',{args:[MOCK,'--mode','stream']})],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS});t.after(()=>s.srv.kill());
+ const a=await s.login();await a.as('/api/state');
+ await a.as('/api/send',{method:'POST',body:JSON.stringify({text:'x',targets:['mock']})});
+ await mkdir(path.join(s.userDir,'state.json.tmp'));   // 질문은 저장된 뒤, 답변 저장만 실패하게
+ const st=await wait(a.as,1);const m=st.messages.at(-1);
+ assert.equal(m.status,'error');assert.equal(m.error,'persist_failed');assert.equal(m.unstoredAnswer,true);assert.match(m.text,/받은 프롬프트/);
+});
+test('V14+V15: after a restart stale running messages become interrupted and auth state is refreshed without user action',async t=>{
+ const s=await startServer([mockAdapter('mock')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS});t.after(()=>s.srv.kill());
+ const a=await s.login();await a.as('/api/state');s.srv.kill();await new Promise(r=>setTimeout(r,300));
+ const f=path.join(s.userDir,'state.json');
+ await writeFile(f,JSON.stringify({messages:[{id:1,role:'assistant',adapter:'mock',status:'running',text:'',at:new Date().toISOString()}],sessions:{mock:'prev'},nextId:2,usage:{},epochs:{}}));
+ const port=20787+Math.floor(Math.random()*2000);
+ const srv2=spawn('node',['src/server.mjs'],{cwd:s.dir,env:{PATH:process.env.PATH,HOME:process.env.HOME,PORT:String(port),MOCK_AUTH:'subscription'},stdio:['ignore','pipe','pipe']});t.after(()=>srv2.kill());
+ await new Promise(r=>srv2.stdout.on('data',d=>{if(String(d).includes('AI Hub'))r();}));
+ const base=`http://127.0.0.1:${port}`;const l=await fetch(base+'/api/login',{method:'POST',headers:{'content-type':'application/json',origin:base},body:JSON.stringify({password:PASS})});const cookie=l.headers.get('set-cookie').split(';')[0];
+ let st;for(let i=0;i<40;i++){st=await (await fetch(base+'/api/state',{headers:{cookie}})).json();if(st.adapters[0].auth?.state==='subscription')break;await new Promise(r=>setTimeout(r,100));}
+ assert.equal(st.messages[0].status,'error');assert.equal(st.messages[0].error,'interrupted');
+ assert.equal(st.adapters[0].auth?.state,'subscription','auth refreshed at boot');
+ assert.equal(JSON.parse(await readFile(f,'utf8')).messages[0].status,'error','persisted');
+});
+test('V17: Claude cache tokens count toward the budget; Codex cached_input is not double counted',()=>{
+ assert.deepEqual(normalizeUsage({input_tokens:10,output_tokens:20,cache_read_input_tokens:10000,cache_creation_input_tokens:2000}),{input:12010,output:20});
+ assert.deepEqual(normalizeUsage({input_tokens:100,output_tokens:5,cached_input_tokens:60}),{input:100,output:5});
+});
+test('V18: two overlapping questions to the same AI run one after another on one session; orchestrator tasks never touch it',async t=>{
+ const s=await startServer([mockAdapter('lead'),mockAdapter('w')],{MOCK_AUTH:'subscription',HUB_PASSWORD:PASS});t.after(()=>s.srv.kill());
+ const a=await s.login();
+ await a.as('/api/send',{method:'POST',body:JSON.stringify({text:'first',targets:['lead']})});await a.as('/api/send',{method:'POST',body:JSON.stringify({text:'second',targets:['lead']})});
+ let st=await wait(a.as,2);const done=st.messages.filter(m=>m.role==='assistant');
+ assert.equal(done[1].session,done[0].session,'second resumed the first session');assert.equal(st.adapters.find(x=>x.id==='lead').session,done[0].session);
+ await a.as('/api/send',{method:'POST',body:JSON.stringify({text:'goal',mode:'orchestrate',lead:'lead',workers:['w']})});
+ st=await wait(a.as,5);const task=st.messages.find(m=>m.kind==='task');
+ assert.ok(task&&task.status==='done');assert.equal(st.adapters.find(x=>x.id==='w').session,null,'task did not leave a session on the worker');
+});
+test('V19: every store write bumps a monotonic seq; the client keeps the newer message',async()=>{
+ const st=new Store(new URL('file://'+path.join(await tmp(),'s.json')));
+ const m=st.add({role:'user',text:'a'});const s1=m.seq;st.update(m.id,{text:'b'});assert.ok(m.seq>s1);
+ const src=await readFile(new URL('../public/app.js',import.meta.url),'utf8');
+ const code=src.slice(src.indexOf('function mergeSnapshot('),src.indexOf('function connect('));
+ const vm=await import('node:vm');const ctx={state:{messages:[{id:1,status:'error',error:'plan_parse_failed',seq:5}]},partials:{}};
+ vm.runInNewContext(code+"\nmergeSnapshot({messages:[{id:1,status:'done',text:'old',seq:3}]});",ctx);
+ assert.equal(ctx.state.messages[0].status,'error','older snapshot (seq 3) does not overwrite seq 5');
+ ctx.state.messages=[{id:1,status:'error'}];vm.runInNewContext("mergeSnapshot({messages:[{id:1,status:'done'}]});",ctx);
+ assert.equal(ctx.state.messages[0].status,'error','without seq a terminal state is not flipped');
+});
+test('V20: mentions need a leading boundary and an exact alias (emails and scoped packages are not mentions)',async()=>{
+ const src=await readFile(new URL('../public/app.js',import.meta.url),'utf8');
+ const code=src.slice(src.indexOf('const ALIAS='),src.indexOf('async function send()'));
+ const vm=await import('node:vm');const ctx={state:{adapters:[{id:'claude',label:'Claude'},{id:'codex',label:'ChatGPT (Codex)'},{id:'gemini',label:'Gemini'}]}};
+ vm.runInNewContext(code,ctx);const p=t=>[...vm.runInNewContext('parseMentions('+JSON.stringify(t)+')',ctx)];
+ assert.deepEqual(p('메일: user@claude.com'),[]);assert.deepEqual(p('문서: @google-cloud/storage'),[]);assert.deepEqual(p('일반 인용: @클라우드 비용'),[]);
+ assert.deepEqual(p('@클로드 이거 봐줘'),['claude']);assert.deepEqual(p('오늘 @코덱스에게 리뷰 맡김'),['codex']);assert.deepEqual(p('@chatgpt 와 @gemini 둘 다'),['codex','gemini']);
+});
+test('cleanup',async()=>{await terminateAll(200);});
