@@ -9,8 +9,33 @@
       "args": [
         "-p",
         "--output-format",
-        "json"
+        "json",
+        "--permission-mode",
+        "acceptEdits",
+        "--allowedTools",
+        "Bash",
+        "WebSearch",
+        "WebFetch",
+        "--disallowedTools",
+        "Bash(rm:*)",
+        "Bash(rmdir:*)",
+        "Bash(shred:*)",
+        "Bash(git clean:*)",
+        "Bash(git reset --hard:*)",
+        "Bash(git push --force:*)",
+        "Bash(git push -f:*)",
+        "Bash(railway:*)",
+        "Bash(gcloud:*)",
+        "Bash(aws:*)",
+        "Bash(az:*)",
+        "Bash(flyctl:*)",
+        "Bash(fly:*)",
+        "Bash(vercel:*)",
+        "Bash(heroku:*)",
+        "Bash(npm publish:*)",
+        "Bash(stripe:*)"
       ],
+      "_권한": "v0.8.7: -p(비대화형)에서는 도구 권한 요청에 답할 사람이 없어 기본값이면 파일 쓰기·명령 실행이 전부 자동 거부된다(코딩 작업이 '읽기만' 하고 끝남). acceptEdits 로 파일 편집은 자동 승인, allowedTools 로 셸·웹 도구 허용, disallowedTools 로 **삭제 명령(rm·rmdir·shred·git clean/reset --hard/push --force)과 과금이 생길 수 있는 클라우드·배포·결제 CLI** 는 거부 → 모델은 거부 메시지를 받고 답변에 [승인 요청] 을 쓴다(사용자 지시: 삭제·추가 과금은 허락을 받을 것). Claude Code 2.1.302 Linux 에서 확인: rm 은 'Permission to use Bash with command rm -f … has been denied' 로 막히고 echo·python3 는 실행, 파일 쓰기는 자동 승인. 파이썬 os.remove 처럼 다른 경로의 삭제는 막지 못하므로 프롬프트 규칙([행동 규칙])이 함께 간다. (root 에서는 Claude Code 가 자동 승인 모드를 거부하므로 docker-entrypoint 의 gosu 강하가 전제.)",
       "resumeArgs": [
         "--resume",
         "{session}"
@@ -54,13 +79,19 @@
       "args": [
         "exec",
         "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
         "-"
       ],
+      "_승인": "Codex exec 에는 Claude 의 disallowedTools 같은 명령 거부 목록이 없어(0.163 --help 기준) 삭제·과금 금지는 프롬프트의 [행동 규칙] 으로만 전달된다. 허브는 답변이 [승인 요청] 으로 시작하면 approvalRequested 로 표시한다.",
+      "_샌드박스": "v0.8.7: codex exec 는 기본으로 bubblewrap(bwrap) 샌드박스 안에서 명령을 돌리는데, 클라우드 컨테이너(Railway 등)는 새 user namespace 생성을 막아 `bwrap: Creating new namespace failed: Permission denied` 로 파일 읽기조차 실패했고, 기본 정책이 읽기 전용이라 파일 생성도 막혔다(2026-10-18 실배포). 컨테이너 자체가 이미 격리돼 있으므로 공식 플래그 설명대로(externally sandboxed) 샌드박스·승인 프롬프트를 끈다. --skip-git-repo-check: git init 이 실패한 작업 폴더에서도 실행. Codex 0.163.0 exec / exec resume 양쪽 --help 에서 두 플래그 확인.",
       "resumeArgs": [
         "exec",
         "resume",
         "{session}",
         "--json",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--skip-git-repo-check",
         "-"
       ],
       "parse": "codex-jsonl",
@@ -109,8 +140,10 @@
         "--input-format",
         "stream-json",
         "--output-format",
-        "stream-json"
+        "stream-json",
+        "--dangerously-skip-permissions"
       ],
+      "_권한": "v0.8.7: 헤드리스(print 모드)에서는 도구 권한 요청이 전부 자동 거부돼, 파일을 읽거나 검색하는 작업이 '빈 응답(status SUCCESS, response 비움)' 으로 끝났다(실배포에서 3회 연속). agy 1.4.2 --help 의 `--dangerously-skip-permissions: Auto-approve all tool permission requests without prompting` 으로 자동 승인. agy 에도 명령 거부 목록은 없어 삭제·과금 금지는 프롬프트의 [행동 규칙] 으로 전달.",
       "_인자": "v0.8.2: Gemini CLI 는 2026-06 부터 개인 Google 계정을 받지 않아(IneligibleTierError — 실배포에서 확인) Google 이 안내하는 후속 도구 Antigravity CLI(agy) 로 교체. --input-format stream-json: 프롬프트를 stdin NDJSON 으로 받는다(인자 길이 제한 없음, Linux 1.4.2 검증). --output-format stream-json: 마지막 result 이벤트에 response·conversation_id·usage. (v0.8.5: --mode plan 은 답변마다 '/plan 모드' 멘트를 섞어 뺐다. 헤드리스에선 승인 없는 도구가 어차피 자동 거부된다.)",
       "stdinFormat": "agy-stream-json",
       "resumeArgs": [
