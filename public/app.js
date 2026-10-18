@@ -62,7 +62,7 @@ function aiHtml(m){
   const p=m.status==='running'?partials[m.id]:null;
   let body='',cls=m.status;
   if(m.status==='running')body=p?.partial?`<span class="partial">${esc(p.partial)}</span><div class="progress">수신 중 … ${(p.bytes/1024).toFixed(1)}KB · ${(p.elapsedMs/1000).toFixed(0)}s</div>`:`<span class="dots">${m.kind==='plan'?'계획 세우는 중':m.kind==='final'?'종합하는 중':'생각 중'}</span>`;
-  else if(m.status==='done')body=m.kind==='plan'?`<details class="raw"><summary>계획 원문(JSON)</summary><pre>${esc(m.text)}</pre></details>`:esc(m.text);   // 팀장의 계획 JSON 은 접어 둔다 — 화면에는 분배 요약만, 답은 ③ 종합 말풍선에
+  else if(m.status==='done')body=(m.approvalRequested?`<div class="approval">✋ 승인 요청 — 이 AI 가 삭제나 과금이 필요한 일 앞에서 멈췄습니다. 내용을 읽고 허락하려면 답장으로 "진행해" 라고 보내세요.</div>`:'')+(m.kind==='plan'?`<details class="raw"><summary>계획 원문(JSON)</summary><pre>${esc(m.text)}</pre></details>`:esc(m.text));   // 팀장의 계획 JSON 은 접어 둔다 — 화면에는 분배 요약만, 답은 ③ 종합 말풍선에. v0.8.7: [승인 요청] 답변은 띠로 강조
   else if(m.status==='blocked')body=`🚫 ${esc(msg(m.error))}`;
   else if(m.status==='cancelled')body='취소됨';
   else body=`⚠️ 오류: ${esc(msg(m.error))}${m.text?'\n\n'+esc(m.text):''}${m.stderrTail?`<details open><summary>CLI 오류 출력</summary><pre>${esc(m.stderrTail)}</pre></details>`:''}`;

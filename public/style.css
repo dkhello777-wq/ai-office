@@ -55,6 +55,7 @@ code{background:rgba(0,0,0,.08);padding:1px 5px;border-radius:4px;font-size:.92e
 .m.ai .bubble{border-left:3px solid var(--ai-color)}
 .bubble.running{color:var(--mute)}
 .bubble.blocked,.bubble.error{border-left-color:var(--bad)}
+.bubble .approval{margin:-2px 0 8px;padding:6px 8px;border:1px solid var(--warn);border-left-width:3px;border-radius:6px;font-size:12.5px;color:var(--warn);background:rgba(217,140,0,.08)}   /* v0.8.7 [승인 요청] */
 .bubble .partial{color:var(--ink)}
 .bubble .progress{font-size:11px;color:var(--mute);margin-top:4px}
 .bubble .plan{margin-top:8px;padding-top:6px;border-top:1px dashed var(--line);font-size:12.5px;color:var(--mute)}
