@@ -37,6 +37,8 @@ export const PARSERS={
       if(/agent_message|assistant|message/.test(type)&&typeof (item.text??item.content??item.message)==='string')text=item.text??item.content??item.message;
       // turn.completed 등의 usage 를 보존 (GPT R02 / Gemini FAIL2). 원문 객체 그대로 — 정규화는 store.normalizeUsage 가 한다 (cached_input 은 input_tokens 에 이미 포함되므로 더하지 않음).
       if(e.usage&&typeof e.usage==='object')usage=e.usage;else if(item?.usage&&typeof item.usage==='object')usage=item.usage;
+      // v0.8.7: Codex 자체 샌드박스(bwrap)가 컨테이너에서 못 떠 명령이 하나도 실행되지 않았는데 exit 0 으로 끝나는 경우 — 모델의 "못 읽었습니다" 답변을 성공으로 올리지 않는다.
+      if(type==='command_execution'&&/bwrap: .*(namespace|Permission denied)/i.test(String(item.aggregated_output??item.output??'')))throw new Error('sandbox_failed');
     }
     if(!text&&!events.length)text=stdout.trim(); // --json 미지원 버전: 평문 그대로
     return {text,session,usage,raw:events};
@@ -216,7 +218,10 @@ export function runAdapter(adapter,{prompt,cwd,session=null,timeoutMs=900000,onC
       if(cancelled)return reject(Object.assign(new Error('cancelled'),base));
       if(timedOut)return reject(Object.assign(new Error('cli_timeout'),{...base,partialText:parsed?.text??null}));   // 검수 V11: SIGTERM 을 받고 exit 0 으로 끝내도 시간 초과는 성공이 아니다
       if(code!==0)return reject(Object.assign(new Error('cli_exit_'+(code??signal_)),base));
-      if(parseError)return reject(Object.assign(new Error('parse_failed'),{...base,parseFailed:true}));
+      // 파서가 던진 고정 오류 코드(소문자·밑줄만: sandbox_failed, agy_status_* 등)는 그대로 화면에 보이고, 그 외 원본 예외 문구는 parse_failed 로 뭉갠다(원문은 meta.json 에만)
+      if(parseError)return reject(Object.assign(new Error(/^[a-z][a-z0-9_]*$/.test(parseError)?parseError:'parse_failed'),{...base,parseFailed:true}));
+      // v0.8.7: exit 0 + 형식은 맞지만 답변 본문이 비어 있으면 성공이 아니다. (실배포: agy 가 도구 승인 거부 뒤 status SUCCESS·response "" 로 끝나 '완료'로 표시됐고, 팀장은 빈 결과를 종합하려 했다.)
+      if(!String(parsed?.text??'').trim())return reject(Object.assign(new Error('empty_result'),{...base,...(parsed??{})}));
       resolve({...parsed,...base});
     };
     child.on('error',x=>{clearTimeout(timer);reject(Object.assign(new Error(x.code==='ENOENT'?'cli_not_found':'spawn_failed'),{cause:x,stderr:err.finish().text,envBlockedNames:blockedNames}));});
