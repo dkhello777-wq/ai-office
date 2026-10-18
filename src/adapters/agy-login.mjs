@@ -3,6 +3,8 @@
 // 제약: agy 는 코드 입력을 60초만 기다리고 "authentication timed out" 으로 끝난다. 그러면 이 래퍼가 자동으로 다시 띄운다(새 URL — 화면에는 최신 URL 이 맨 앞).
 // 코드가 맞으면 agy 는 바로 확인용 프롬프트를 실행하고 JSON 으로 status SUCCESS 를 내며 종료 → exit 0. 토큰은 agy 가 알아서 저장한다(컨테이너엔 D-Bus 가 없어 파일 저장으로 폴백 — 로그에서 확인).
 import {spawn} from 'node:child_process';
+import {mkdirSync,writeFileSync} from 'node:fs';
+import path from 'node:path';
 
 const MAX_ROUNDS=Number(process.env.AGY_LOGIN_ROUNDS||8);
 const PROMPT='로그인 확인입니다. 도구를 쓰지 말고 "OK" 한 단어만 답하세요.';
@@ -23,7 +25,7 @@ function launch(){
     if(finished)return;
     const text=stripAnsi(buf);
     let ok=false;for(const line of text.split(/\r?\n/)){const t=line.trim();if(!t.startsWith('{'))continue;try{const j=JSON.parse(t);if(j&&j.status==='SUCCESS')ok=true;}catch{}}
-    if(ok){finished=true;process.stdout.write('\nAntigravity login complete.\n');return process.exit(0);}
+    if(ok){finished=true;try{const d=path.join(process.env.HOME,'.gemini/antigravity-cli');mkdirSync(d,{recursive:true});writeFileSync(path.join(d,'hub-login-ok'),new Date().toISOString()+'\n',{mode:0o600});}catch{}process.stdout.write('\nAntigravity login complete.\n');return process.exit(0);}
     if(/authentication timed out|authentication failed or timed out/i.test(text)){process.stdout.write(`\n[${round}/${MAX_ROUNDS}] 60초 안에 코드가 들어오지 않아 새 로그인 URL 을 다시 받습니다. 위에 새로 뜨는 URL 로 진행하세요.\n`);return setTimeout(launch,500);}
     finished=true;process.exit(code??1);
   });

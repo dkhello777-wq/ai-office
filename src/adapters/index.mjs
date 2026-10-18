@@ -271,7 +271,7 @@ export const AUTH_PARSERS={
     const mode=typeof d.mode==='string'?d.mode:null;
     if(mode==='gemini-api-key')return {state:'api_key',reason:'model_provider_gemini_api_key',authMethod:mode};
     if(mode&&mode!=='account')return {state:'third_party',reason:'mode_'+mode,authMethod:mode};
-    if(d.loggedIn===false)return {state:'not_logged_in',reason:typeof d.reason==='string'?d.reason.slice(0,40):'logged_in_false',authMethod:mode};
+    if(d.loggedIn===false)return {state:'not_logged_in',reason:typeof d.reason==='string'?d.reason.slice(0,120):'logged_in_false',authMethod:mode};
     if(d.loggedIn!==true)return {state:'unverified',reason:'logged_in_missing',authMethod:mode};
     return {state:'subscription',reason:'google_account_antigravity',authMethod:'account',apiProvider:'google',subscriptionType:typeof d.tier==='string'?d.tier:'google-account'};
   },
