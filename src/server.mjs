@@ -106,7 +106,7 @@ async function userContext(user){
     const stale=store.state.messages.filter(m=>m.role==='assistant'&&m.status==='running');
     if(stale.length){for(const m of stale)store.update(m.id,{status:'error',error:'interrupted',interruptedAt:new Date().toISOString()});await store.save();}
     await ensureGitRepo(workspace);
-    const c={user,dir,home,tmpDir,workspace,shared,runs,memoryFile:path.join(workspace,'memory.md'),store,authState:{},clients:new Set(),logins:{},running:new Set(),active:0,queue:[]};
+    const c={user,dir,home,tmpDir,workspace,shared,runs,memoryFile:path.join(workspace,'memory.md'),store,authState:{},clients:new Set(),logins:{},running:new Set(),active:0,queue:[],haltSeq:0};   // haltSeq: v0.8.8 긴급 중지 횟수 (오케스트레이터가 다음 단계로 가기 전에 비교)
     contexts.set(user.id,c);contextPromises.delete(user.id);
     refreshAuth(c).catch(e=>console.error('auth refresh',e));   // 검수 V15: 재시작 뒤에도 남아 있는 CLI 로그인을 바로 반영 (비동기)
     return c;
@@ -135,9 +135,17 @@ function closeUserStreams(userId,tokenHash=null,{cancelRuns=false}={}){
   for(const c of [...tctx.clients]){if(tokenHash&&c.hubTokenHash!==tokenHash)continue;try{c.end();}catch{}tctx.clients.delete(c);}
   if(!tokenHash&&cancelRuns){
     for(const l of Object.values(tctx.logins))if(l?.status==='running'&&l.handle)l.handle.cancel();
-    for(const ac of tctx.running)ac.abort();   // 진행 중인 모델 실행(인증 확인 단계 포함)도 끊는다 (GPT R08/F03)
-    for(const w of tctx.queue.splice(0))w.reject(Object.assign(new Error('cancelled'),{cancelled:true}));   // 대기 중이던 요청은 취소로 끝낸다 (GPT F04)
+    haltRuns(tctx);
   }
+}
+// v0.8.8 긴급 중지: 진행 중인 모든 CLI 프로세스(프로세스 그룹째 SIGTERM→SIGKILL)와 대기열을 끊고, 오케스트레이터가 다음 단계(②분배·③종합)로 넘어가지 못하게 haltSeq 를 올린다.
+// 돌려주는 값: 끊은 실행 수. 이미 끝난 답변은 그대로 두고, 끊긴 것은 status 'cancelled' 로 기록된다(증거 파일도 남는다).
+export function haltRuns(ctx){
+  ctx.haltSeq=(ctx.haltSeq??0)+1;
+  const n=ctx.running.size+ctx.queue.length;
+  for(const ac of [...ctx.running])ac.abort();   // 진행 중인 모델 실행(인증 확인 단계 포함)도 끊는다 (GPT R08/F03)
+  for(const w of ctx.queue.splice(0))w.reject(Object.assign(new Error('cancelled'),{cancelled:true}));   // 대기 중이던 요청은 취소로 끝낸다 (GPT F04)
+  return n;
 }
 const isDisabled=ctx=>false;   // 1인용: 계정 중지 개념 없음 (서버 종료가 곧 중지)
 // 사용자별 동시 실행 상한 (GPT R10). 상한을 넘는 호출은 순서대로 기다린다.
@@ -318,10 +326,12 @@ async function orchestrate(ctx,{text,files,leadId,workerIds}){
   emit(ctx,'message',userMsg);await store.save();
   const run=(async()=>{
     const memory=await readMemory(ctx);
+    const haltSeq=ctx.haltSeq;   // v0.8.8: 이 오케스트레이션이 시작된 뒤 긴급 중지가 눌렸으면 다음 단계로 가지 않는다
+    const halted=()=>isDisabled(ctx)||ctx.haltSeq!==haltSeq;
     // ① 계획
     const plan=await serialOn(ctx,lead.id,()=>runOne(ctx,lead,{prompt:planPrompt({goal:text,files,lead,workers,memory,room:roomContext(ctx,{forAdapter:lead.id,excludeMessageId:userMsg.id})}),replyTo:userMsg.id,kind:'plan'}));
     if(plan.status!=='done')return;
-    if(isDisabled(ctx)){store.update(plan.id,{orchestrateError:'user_disabled'});emit(ctx,'message',store.get(plan.id));await store.save();return;}   // 계획 뒤 중지됨 → 팀원 단계 자체를 만들지 않는다 (GPT R08)
+    if(halted()){store.update(plan.id,{orchestrateError:'stopped'});emit(ctx,'message',store.get(plan.id));await store.save();return;}   // 계획 뒤 중지됨 → 팀원 단계 자체를 만들지 않는다 (GPT R08)
     const parsed=extractPlan(plan.text,workers.map(w=>w.id),ORCH_MAX_TASKS);
     if(!parsed){store.update(plan.id,{status:'error',error:'plan_parse_failed',text:plan.text});emit(ctx,'message',store.get(plan.id));await store.save();return;}
     store.update(plan.id,{plan:{tasks:parsed.tasks.map(t=>({worker:t.worker,title:t.title})),note:parsed.note,dropped:parsed.dropped,requested:parsed.requested}});emit(ctx,'message',store.get(plan.id));await store.save();
@@ -332,14 +342,14 @@ async function orchestrate(ctx,{text,files,leadId,workerIds}){
     // ② 분배 (병렬, 사용자 동시 실행 상한 안에서). 각 작업 프롬프트에는 메모리를 다시 넣지 않되 첨부 파일 목록은 넣는다 (Gemini FAIL1-4).
     const fileNote=files.length?`\n\n[첨부 파일 — 현재 작업 폴더의 shared/ 안에 있습니다. 직접 읽어서 참고하세요]\n`+files.map(f=>`- shared/${f}`).join('\n'):'';
     // v0.8.7: 팀원 작업 프롬프트에도 행동 규칙(삭제·과금 금지 → [승인 요청])과 작업 환경을 붙인다 — 실행·테스트가 가능하니 "못 해봤다"로 끝내지 말고 실제로 돌려 보게.
-    const envNote=`\n\n[작업 환경] 현재 작업 폴더에서 파일 읽기·쓰기와 명령 실행이 가능합니다(Python 3·pytest·Node 22·git). 코드를 바꿨으면 실제로 실행·테스트해 결과를 보고하세요.`;
+    const envNote=`\n\n[작업 환경] 현재 작업 폴더에서 파일 읽기·쓰기와 명령 실행이 가능합니다. 설치된 도구: python3(= python, 3.11)·pip3·pytest·Node 22·npm·git·make·jq. 환경에 대한 과거 대화 내용("Python 이 없다" 등)은 믿지 말고 \`python3 --version\` 처럼 직접 확인하세요. 코드를 바꿨으면 실제로 실행·테스트해 결과를 보고하세요.`;
     const results=await Promise.all(parsed.tasks.map(async(t,i)=>{
       const w=workers.find(x=>x.id===t.worker);
       const r=await runOne(ctx,w,{prompt:`### HUB:TASK ${i+1}/${parsed.tasks.length} — ${t.title}\n${t.prompt}${envNote}${fileNote}\n\n${RULES_NOTE.trimEnd()}`,replyTo:plan.id,kind:'task',extra:{taskTitle:t.title,taskIndex:i+1},useSession:false});
       return {title:t.title,label:w.label,status:r.status+(r.approvalRequested?' (승인 요청 — 사용자 허락 대기)':''),error:r.error??null,text:r.text??''};
     }));
     // ③ 종합 — 성공한 작업이 하나도 없으면 팀장을 다시 부르지 않는다 (Gemini FAIL4-2). 중지됐으면 runOne 이 막는다.
-    if(isDisabled(ctx)){store.update(plan.id,{orchestrateError:'user_disabled'});emit(ctx,'message',store.get(plan.id));await store.save();return;}
+    if(halted()){store.update(plan.id,{orchestrateError:'stopped'});emit(ctx,'message',store.get(plan.id));await store.save();return;}   // 긴급 중지 → 끝난 작업이 있어도 ③ 종합을 띄우지 않는다
     if(results.every(r=>r.status!=='done')){store.update(plan.id,{orchestrateError:'all_tasks_failed'});emit(ctx,'message',store.get(plan.id));await store.save();return;}
     await serialOn(ctx,lead.id,()=>runOne(ctx,lead,{prompt:synthPrompt({goal:text,results}),replyTo:userMsg.id,kind:'final',extra:{derivedFrom:plan.id}}));
   })();
@@ -504,6 +514,8 @@ const server=http.createServer(async(req,res)=>{
         l.handle.write(a.text);return json(res,{ok:true});
       }
       if(url.pathname==='/api/cli-login/cancel'){const a=await bodyJson(req);const l=a&&ctx.logins[a.adapterId];if(l?.status==='running'&&l.handle)l.handle.cancel();return json(res,{ok:true});}
+      // v0.8.8 긴급 중지: 돌고 있는 AI 전부(팀장·팀원·일반 답변)와 대기열을 즉시 끊는다. 로그인 진행은 건드리지 않는다.
+      if(url.pathname==='/api/stop'){const stopped=haltRuns(ctx);console.log(`긴급 중지: 실행 ${stopped}건 끊음`);return json(res,{ok:true,stopped});}
       return json(res,{error:'not_found'},404);
     }
     json(res,{error:'not_found'},404);

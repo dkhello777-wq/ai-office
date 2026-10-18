@@ -45,6 +45,7 @@ if(mode==='fail'){
   process.exit(3);
 }
 if(mode==='badjson'){await write(process.stdout,'{"text": "unterminated');process.exit(0);}
+if(mode==='slow'){await new Promise(r=>setTimeout(r,15000));console.log(JSON.stringify({text:'[mock 느린 답변] 끝까지 돌았음',session,usage:null}));process.exit(0);}   // v0.8.8 긴급 중지 테스트용: 15초 뒤에야 답한다
 if(mode==='envdump'){
   const keys=Object.keys(process.env).filter(k=>/^(HUB_REVIEW_MARKER|FAKE_API_KEY|FAKE_BASE_URL|PATH)$/.test(k)).sort();
   console.log(JSON.stringify({text:'env:'+keys.join(','),session,usage:null}));process.exit(0);

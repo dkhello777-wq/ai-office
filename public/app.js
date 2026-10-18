@@ -15,7 +15,7 @@ const label=id=>ad(id)?.label??id;
 const color=id=>ad(id)?.color??'#888';
 const initial=a=>(a.label??a.id??'?').replace(/\s*\(.*\)/,'').trim()[0]?.toUpperCase()??'?';
 const connected=a=>a.auth?.state==='subscription';
-const ERR={setup_code_invalid:'설정 코드가 맞지 않습니다 — 서버 로그(또는 data/setup-code)의 코드를 넣으세요',persist_failed:'답은 받았지만 저장에 실패했습니다 (서버 디스크 확인)',interrupted:'서버가 재시작되어 중단됨',body_too_large:'요청이 너무 큽니다',login_required:'로그인이 필요합니다',login_invalid:'비밀번호가 맞지 않습니다',too_many_attempts:'실패가 많아 15분간 잠겼습니다',password_too_short:'비밀번호는 10자 이상',already_set:'이미 비밀번호가 있습니다',login_already_running:'이미 연결 진행 중',login_not_configured:'이 AI 는 화면 연결 명령이 아직 없습니다',budget_exceeded:'이번 달 토큰 상한에 도달 — 메뉴 > 토큰 예산에서 조정',workers_required:'팀원이 될 AI 가 더 연결돼야 합니다',lead_required:'팀장 AI 를 먼저 지정하세요',plan_parse_failed:'팀장이 계획을 JSON 으로 내지 않아 분배를 멈췄습니다',budget_invalid:'상한은 0 이상의 숫자',cancelled:'취소됨',text_too_long:'글자 수 상한 초과',file_too_large:'파일 크기 상한 초과',state_corrupt:'대화 저장 파일이 손상됨',state_unreadable:'대화 저장 파일을 읽을 수 없음',not_logged_in:'아직 연결되지 않음 — 참여자에서 연결하세요',api_key_auth_detected:'API 키 모드라 차단됨 (구독 로그인만 허용)',third_party_auth_detected:'서드파티 인증이라 차단됨',auth_unverified:'인증 상태를 확인할 수 없어 차단됨',cli_not_found:'CLI 가 서버에 설치돼 있지 않음',cli_timeout:'시간 초과',all_tasks_failed:'팀원 작업이 전부 실패해 종합을 건너뜀'};
+const ERR={setup_code_invalid:'설정 코드가 맞지 않습니다 — 서버 로그(또는 data/setup-code)의 코드를 넣으세요',persist_failed:'답은 받았지만 저장에 실패했습니다 (서버 디스크 확인)',interrupted:'서버가 재시작되어 중단됨',body_too_large:'요청이 너무 큽니다',login_required:'로그인이 필요합니다',login_invalid:'비밀번호가 맞지 않습니다',too_many_attempts:'실패가 많아 15분간 잠겼습니다',password_too_short:'비밀번호는 10자 이상',already_set:'이미 비밀번호가 있습니다',login_already_running:'이미 연결 진행 중',login_not_configured:'이 AI 는 화면 연결 명령이 아직 없습니다',budget_exceeded:'이번 달 토큰 상한에 도달 — 메뉴 > 토큰 예산에서 조정',workers_required:'팀원이 될 AI 가 더 연결돼야 합니다',lead_required:'팀장 AI 를 먼저 지정하세요',plan_parse_failed:'팀장이 계획을 JSON 으로 내지 않아 분배를 멈췄습니다',budget_invalid:'상한은 0 이상의 숫자',cancelled:'취소됨',text_too_long:'글자 수 상한 초과',file_too_large:'파일 크기 상한 초과',state_corrupt:'대화 저장 파일이 손상됨',state_unreadable:'대화 저장 파일을 읽을 수 없음',not_logged_in:'아직 연결되지 않음 — 참여자에서 연결하세요',api_key_auth_detected:'API 키 모드라 차단됨 (구독 로그인만 허용)',third_party_auth_detected:'서드파티 인증이라 차단됨',auth_unverified:'인증 상태를 확인할 수 없어 차단됨',cli_not_found:'CLI 가 서버에 설치돼 있지 않음',cli_timeout:'시간 초과',all_tasks_failed:'팀원 작업이 전부 실패해 종합을 건너뜀',stopped:'긴급 중지로 멈춤 — 다음 단계로 가지 않음',empty_result:'답변이 비어 있어 실패로 처리',sandbox_failed:'Codex 샌드박스가 컨테이너에서 못 떠 명령이 실행되지 않음'};
 const msg=e=>ERR[e]??e;
 const AUTH_KO={subscription:'연결됨',api_key:'API 키 모드 — 차단',third_party:'서드파티 — 차단',not_logged_in:'연결 필요',unverified:'확인 안 됨'};
 
@@ -64,7 +64,7 @@ function aiHtml(m){
   if(m.status==='running')body=p?.partial?`<span class="partial">${esc(p.partial)}</span><div class="progress">수신 중 … ${(p.bytes/1024).toFixed(1)}KB · ${(p.elapsedMs/1000).toFixed(0)}s</div>`:`<span class="dots">${m.kind==='plan'?'계획 세우는 중':m.kind==='final'?'종합하는 중':'생각 중'}</span>`;
   else if(m.status==='done')body=(m.approvalRequested?`<div class="approval">✋ 승인 요청 — 이 AI 가 삭제나 과금이 필요한 일 앞에서 멈췄습니다. 내용을 읽고 허락하려면 답장으로 "진행해" 라고 보내세요.</div>`:'')+(m.kind==='plan'?`<details class="raw"><summary>계획 원문(JSON)</summary><pre>${esc(m.text)}</pre></details>`:esc(m.text));   // 팀장의 계획 JSON 은 접어 둔다 — 화면에는 분배 요약만, 답은 ③ 종합 말풍선에. v0.8.7: [승인 요청] 답변은 띠로 강조
   else if(m.status==='blocked')body=`🚫 ${esc(msg(m.error))}`;
-  else if(m.status==='cancelled')body='취소됨';
+  else if(m.status==='cancelled')body='⏹ 중지됨 — 긴급 중지로 끊김'+(m.text?'\n\n'+esc(m.text):'');
   else body=`⚠️ 오류: ${esc(msg(m.error))}${m.text?'\n\n'+esc(m.text):''}${m.stderrTail?`<details open><summary>CLI 오류 출력</summary><pre>${esc(m.stderrTail)}</pre></details>`:''}`;
   const kind=m.kind&&KIND[m.kind]?`<span class="kind ${m.kind}">${KIND[m.kind]}${m.taskTitle?' · '+esc(m.taskTitle):''}</span><br>`:'';
   const plan=m.kind==='plan'&&m.plan?`<div class="plan">분배: ${m.plan.tasks.length?m.plan.tasks.map(t=>`${esc(label(t.worker))} — ${esc(t.title||'(제목 없음)')}`).join(' · '):'팀원 없이 직접 답함'}${m.plan.dropped?` · 버린 작업 ${m.plan.dropped}개`:''}${m.plan.note?'<br>'+esc(m.plan.note):''}${m.orchestrateError?'<br>'+esc(msg(m.orchestrateError)):''}</div>`:'';
@@ -84,6 +84,7 @@ function renderTimeline(){
     html+=m.role==='user'?userHtml(m):aiHtml(m);
   }
   tl.innerHTML=html;
+  $('#stop').hidden=!state.messages.some(m=>m.status==='running');   // v0.8.8: 돌고 있는 AI 가 있을 때만 긴급 중지 버튼
   if(atBottom)chat.scrollTop=chat.scrollHeight;
   tl.querySelectorAll('[data-handoff]').forEach(b=>b.onclick=()=>handoff(Number(b.dataset.handoff),b.dataset.to));
   tl.querySelectorAll('[data-save]').forEach(b=>b.onclick=async()=>{const name=prompt('저장할 파일 이름',`answer-${b.dataset.save}.md`);if(name){await api('/api/save',{method:'POST',body:JSON.stringify({messageId:Number(b.dataset.save),name})});toast('파일로 저장됨');}});
@@ -181,6 +182,8 @@ async function handoff(messageId,to){
   await api('/api/send',{method:'POST',body:JSON.stringify({text:note,targets:[to],files:[...attached],handoffFrom:messageId})});scrollBottom();
 }
 $('#send').onclick=send;
+// v0.8.8 긴급 중지: 확인창 없이 즉시 (급할 때 누르는 버튼). 서버가 돌고 있는 CLI 전부를 끊고 대기열도 비운다.
+$('#stop').onclick=async()=>{const b=$('#stop');b.disabled=true;try{const r=await api('/api/stop',{method:'POST',body:'{}'});toast(r.stopped?`긴급 중지 — 실행 ${r.stopped}건 끊음`:'돌고 있는 작업이 없습니다');}catch(e){toast(msg(e.message));}finally{b.disabled=false;}};
 // v0.8.6: Enter = 전송, Shift+Enter = 줄바꿈 (Ctrl/Cmd+Enter 도 전송). 한글 IME 조합 중(isComposing)의 Enter 는 무시해 마지막 글자가 두 번 들어가거나 조합이 끊기지 않게.
 $('#text').addEventListener('keydown',e=>{if(e.key!=='Enter'||e.isComposing||e.keyCode===229)return;if(e.shiftKey)return;e.preventDefault();send();});
 function autosize(){const t=$('#text');t.style.height='auto';t.style.height=Math.min(t.scrollHeight,140)+'px';}

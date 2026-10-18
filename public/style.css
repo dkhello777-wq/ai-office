@@ -34,6 +34,9 @@ code{background:rgba(0,0,0,.08);padding:1px 5px;border-radius:4px;font-size:.92e
 #top{display:flex;align-items:center;gap:8px;padding:env(safe-area-inset-top,0) 10px 0 14px;height:calc(56px + env(safe-area-inset-top,0));background:var(--head);border-bottom:1px solid var(--line);flex:none}
 .room{flex:1;min-width:0}.room-name{font-weight:700;font-size:16px}.count{color:var(--mute);font-weight:400;font-size:14px;margin-left:4px}
 .conn{font-size:11px;color:var(--mute)}.conn.ok{color:var(--ok)}.conn.bad{color:var(--bad)}
+.stop{flex:none;background:var(--bad);color:#fff;border:0;border-radius:8px;padding:8px 12px;font-weight:700;font-size:13px;cursor:pointer;animation:stop-pulse 1.6s ease-in-out infinite}   /* v0.8.8 긴급 중지 — 실행 중일 때만 보임 */
+.stop:disabled{opacity:.6;animation:none}
+@keyframes stop-pulse{0%,100%{box-shadow:0 0 0 0 rgba(214,69,69,.45)}50%{box-shadow:0 0 0 6px rgba(214,69,69,0)}}
 .avatars{display:flex;padding:4px}.avatars .av{margin-left:-8px;border:2px solid var(--head)}
 .av{width:30px;height:30px;border-radius:50%;background:var(--ai-color);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;flex:none}
 .av.off{opacity:.35;filter:grayscale(1)}

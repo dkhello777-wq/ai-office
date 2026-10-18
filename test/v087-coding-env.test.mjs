@@ -73,3 +73,54 @@ test('deployed adapters.json: every real CLI runs non-interactively with tool ap
   assert.ok(agy.includes('--dangerously-skip-permissions'));
   assert.ok(agy.includes('stream-json'));
 });
+
+// ---- v0.8.8 긴급 중지: POST /api/stop 이 돌고 있는 CLI 전부를 끊고(status cancelled), 오케스트레이터는 ③ 종합으로 넘어가지 않는다 ----
+import {spawn} from 'node:child_process';
+import {mkdtemp,mkdir,writeFile} from 'node:fs/promises';
+import path from 'node:path';
+import {ROOT} from '../src/adapters/index.mjs';
+const MOCK=new URL('../src/adapters/mock-cli.mjs',import.meta.url).pathname;
+const mockAdapter=(id,extra={})=>({id,label:id,color:'#888',command:'node',args:[MOCK],resumeArgs:['--session','{session}'],parse:'mock-json',enabled:true,envAllow:['MOCK_AUTH'],authCheck:{args:[MOCK,'--auth-status'],parser:'mock-json'},login:{args:[MOCK,'--login']},...extra});
+async function startServer(adapters,env={}){
+  const dir=await mkdtemp(path.join(os.tmpdir(),'hub-stop-'));
+  await mkdir(path.join(dir,'config'),{recursive:true});
+  await writeFile(path.join(dir,'config/adapters.json'),JSON.stringify({adapters,timeoutMs:30000,port:0,host:'127.0.0.1',allowedHosts:[],authCacheMs:0,users:{dir:'data/users'},loginTimeoutMs:20000}));
+  await new Promise((res,rej)=>{const c=spawn('cp',['-r',path.join(ROOT,'src'),path.join(ROOT,'public'),dir]);c.on('close',code=>code===0?res():rej(Error('cp failed')));});
+  const port=20787+Math.floor(Math.random()*2000);
+  const srv=spawn('node',['src/server.mjs'],{cwd:dir,env:{PATH:process.env.PATH,HOME:process.env.HOME,PORT:String(port),...env},stdio:['ignore','pipe','pipe']});
+  let log='';srv.stderr.on('data',d=>log+=d);
+  await new Promise(r=>srv.stdout.on('data',d=>{log+=d;if(String(d).includes('AI Hub'))r();}));
+  const base=`http://127.0.0.1:${port}`;
+  const call=(p,o={})=>fetch(base+p,{...o,headers:{'content-type':'application/json',origin:base,...(o.headers??{})}});
+  const code=(await readFile(path.join(dir,'data/setup-code'),'utf8')).trim();
+  const r=await call('/api/setup',{method:'POST',body:JSON.stringify({password:'synthetic password 1',code})});
+  assert.equal(r.status,200,await r.text());
+  const cookie=r.headers.get('set-cookie').split(';')[0];
+  const as=async(p,o={})=>{const x=await call(p,{...o,headers:{cookie}});return {status:x.status,body:await x.json()};};
+  return {srv,as,log:()=>log};
+}
+const until=async(as,pred,ms=8000)=>{const t0=Date.now();for(;;){const st=(await as('/api/state')).body;if(pred(st))return st;if(Date.now()-t0>ms)throw Error('timeout: '+JSON.stringify(st.messages.map(m=>[m.adapter,m.kind,m.status,m.error])));await new Promise(r=>setTimeout(r,100));}};
+
+test('v0.8.8 emergency stop: /api/stop kills every running CLI (cancelled), leaves finished answers alone, and an orchestration never reaches synthesis',async t=>{
+  const s=await startServer([mockAdapter('lead'),mockAdapter('slow',{args:[MOCK,'--mode','slow']}),mockAdapter('fast')],{MOCK_AUTH:'subscription'});t.after(()=>s.srv.kill());
+  // 1) 일반 호출 둘: fast 는 바로 끝나고 slow 는 15초 걸린다 → 중지하면 slow 만 cancelled
+  assert.equal((await s.as('/api/send',{method:'POST',body:JSON.stringify({text:'하나',targets:['fast','slow']})})).status,200);
+  let st=await until(s.as,x=>x.messages.some(m=>m.adapter==='fast'&&m.status==='done')&&x.messages.some(m=>m.adapter==='slow'&&m.status==='running'));
+  const t0=Date.now();
+  const stop=await s.as('/api/stop',{method:'POST',body:'{}'});
+  assert.equal(stop.status,200);assert.equal(stop.body.stopped,1,'exactly the slow run was running');
+  st=await until(s.as,x=>x.messages.some(m=>m.adapter==='slow'&&m.status==='cancelled'),5000);
+  assert.ok(Date.now()-t0<5000,'stopped well before the 15s the CLI would have taken');
+  const fast=st.messages.find(m=>m.adapter==='fast');assert.equal(fast.status,'done');assert.match(fast.text,/mock 답변/,'finished answer untouched');
+  assert.equal((await s.as('/api/stop',{method:'POST',body:'{}'})).body.stopped,0,'nothing left to stop');
+  // 2) 팀장 모드: 계획(lead) → 작업(slow·fast 병렬) 중에 중지 → slow 작업 cancelled, 종합(final) 은 생기지 않고 계획에 stopped 표시
+  assert.equal((await s.as('/api/send',{method:'POST',body:JSON.stringify({text:'팀 작업',mode:'orchestrate',lead:'lead',workers:['slow','fast']})})).status,200);
+  st=await until(s.as,x=>x.messages.some(m=>m.kind==='task'&&m.adapter==='slow'&&m.status==='running')&&x.messages.some(m=>m.kind==='task'&&m.adapter==='fast'&&m.status==='done'));
+  assert.equal((await s.as('/api/stop',{method:'POST',body:'{}'})).body.stopped,1);
+  st=await until(s.as,x=>x.messages.some(m=>m.kind==='plan'&&m.orchestrateError==='stopped'),5000);
+  assert.equal(st.messages.find(m=>m.kind==='task'&&m.adapter==='slow').status,'cancelled');
+  await new Promise(r=>setTimeout(r,500));
+  st=(await s.as('/api/state')).body;
+  assert.ok(!st.messages.some(m=>m.kind==='final'),'no synthesis after an emergency stop');
+  assert.match(s.log(),/긴급 중지: 실행 1건 끊음/);
+});

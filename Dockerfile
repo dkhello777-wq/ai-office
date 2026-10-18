@@ -11,10 +11,11 @@ RUN apt-get update \
 # v0.8.7 코딩·검수 도구: AI 들이 작업 폴더에서 코드를 실제로 실행·테스트할 수 있게 Python 3.11(bookworm) + pip + venv, make, jq, unzip.
 # 2026-10-18 실배포에서 Claude 가 "작업 공간에 Python 이 없어 실행·테스트 불가" 로 끝났다. pytest 는 시스템 전역(프로젝트별 venv 는 AI 가 만든다).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-pip python3-venv make jq unzip \
+ && apt-get install -y --no-install-recommends python3 python3-pip python3-venv python-is-python3 make jq unzip \
  && rm -rf /var/lib/apt/lists/* \
  && pip3 install --no-cache-dir --break-system-packages pytest==8.4.1 \
- && python3 --version && pytest --version
+ && python3 --version && python --version && pytest --version
+# python-is-python3 (v0.8.8): AI 가 `python` 이라는 짧은 이름으로 불러도 "command not found" 가 나지 않게 (Debian 은 기본으로 python3 만 둔다).
 
 RUN npm install -g @anthropic-ai/claude-code@2.1.302 @openai/codex@0.163.0 \
  && claude --version && codex --version
