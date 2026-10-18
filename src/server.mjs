@@ -9,7 +9,7 @@ import {readFile,writeFile,readdir,stat,mkdir,chmod,appendFile,unlink} from 'nod
 import {createReadStream} from 'node:fs';
 import {execFile} from 'node:child_process';
 import path from 'node:path';
-import {loadConfig,runAdapter,checkAuth,startLogin} from './adapters/index.mjs';
+import {loadConfig,runAdapter,checkAuth,startLogin,maskLine} from './adapters/index.mjs';
 import {Store,sha256} from './store.mjs';
 import {Owner,OWNER_ID,PASSWORD_MIN,validBudgetTokens,validPassword} from './owner.mjs';
 import {randomBytes} from 'node:crypto';
@@ -257,7 +257,8 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
     store.update(reply.id,{status:'done',text:r.text,usage:r.usage,elapsedMs:r.elapsedMs,session:r.session??session,hash:sha256(r.text),exitCode:r.exitCode,evidence:r.evidence,envBlockedNames:r.envBlockedNames,authCheck:publicAuth(auth),usageMonth:{...used}});
   }catch(e){
     const evidenceFailed=/^evidence_/.test(e.message);
-    store.update(reply.id,{status:e.cancelled?'cancelled':'error',error:e.message,exitCode:e.exitCode??null,signal:e.signal??null,timedOut:!!e.timedOut,parseFailed:!!e.parseFailed,elapsedMs:e.elapsedMs??null,evidence:e.evidence??null,evidencePreserved:!!e.evidence&&!evidenceFailed,envBlockedNames:e.envBlockedNames??null,...(evidenceFailed&&typeof e.text==='string'?{text:e.text,hash:sha256(e.text),unstoredAnswer:true}:{})});
+    const stderrTail=typeof e.stderr==='string'&&e.stderr.trim()?e.stderr.trim().split('\n').slice(-8).map(l=>maskLine(l.slice(0,300))).join('\n').slice(-1200):null;   // v0.8.1: 실패 원인을 화면에서 볼 수 있게 stderr 꼬리(가림 처리)를 함께 둔다 — 원문은 증거 파일에
+    store.update(reply.id,{status:e.cancelled?'cancelled':'error',error:e.message,stderrTail,exitCode:e.exitCode??null,signal:e.signal??null,timedOut:!!e.timedOut,parseFailed:!!e.parseFailed,elapsedMs:e.elapsedMs??null,evidence:e.evidence??null,evidencePreserved:!!e.evidence&&!evidenceFailed,envBlockedNames:e.envBlockedNames??null,...(evidenceFailed&&typeof e.text==='string'?{text:e.text,hash:sha256(e.text),unstoredAnswer:true}:{})});
   }
   finally{ctx.running.delete(ac);if(slot)releaseSlot(ctx);}
   await persistThenEmit(ctx,reply.id);   // 검수 V13: 디스크에 남은 뒤에만 완료를 알린다
