@@ -1,5 +1,5 @@
 # AI 오피스 — 1인용 클라우드 배포 이미지.
-# 서버(Node 22) + 공식 AI CLI 3종(Claude Code · Codex · Antigravity CLI) + git(Codex 가 작업 폴더에 git 저장소를 요구).
+# 서버(Node 22) + 공식 AI CLI 3종(Claude Code · Codex · Antigravity CLI) + git(Codex 가 작업 폴더에 git 저장소를 요구) + Python 도구(v0.8.7, 코드 실행·테스트용).
 # 로그인 정보·대화·파일은 전부 /app/data 에 쌓이므로 그 경로를 영구 볼륨으로 잡아야 재배포해도 유지된다.
 # 검수 V21: 검증한 버전으로 고정 (Linux 에서 상태 명령 출력을 확인한 조합). 올릴 때는 adapters.json 파서와 함께 확인.
 FROM node:22.22.0-bookworm-slim
@@ -7,6 +7,14 @@ FROM node:22.22.0-bookworm-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates curl ripgrep procps gosu tini \
  && rm -rf /var/lib/apt/lists/*
+
+# v0.8.7 코딩·검수 도구: AI 들이 작업 폴더에서 코드를 실제로 실행·테스트할 수 있게 Python 3.11(bookworm) + pip + venv, make, jq, unzip.
+# 2026-10-18 실배포에서 Claude 가 "작업 공간에 Python 이 없어 실행·테스트 불가" 로 끝났다. pytest 는 시스템 전역(프로젝트별 venv 는 AI 가 만든다).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 python3-pip python3-venv make jq unzip \
+ && rm -rf /var/lib/apt/lists/* \
+ && pip3 install --no-cache-dir --break-system-packages pytest==8.4.1 \
+ && python3 --version && pytest --version
 
 RUN npm install -g @anthropic-ai/claude-code@2.1.302 @openai/codex@0.163.0 \
  && claude --version && codex --version

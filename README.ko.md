@@ -1,4 +1,4 @@
-# AI 오피스 v0.7.3 — 구독 중인 AI 들을 단톡방 하나에서 (1인용 · 클라우드)
+# AI 오피스 v0.8.7 — 구독 중인 AI 들을 단톡방 하나에서 (1인용 · 클라우드)
 
 내 서버 한 대에 띄워 두고, 폰·PC 브라우저로 접속해 **내가 구독 중인 AI 들과 단톡방처럼** 대화합니다. 참여자는 내가 연결한 AI 수만큼: Claude 만 있으면 1:1, ChatGPT(Codex) 까지 연결하면 3인 방.
 
@@ -135,6 +135,21 @@ npm start         # http://127.0.0.1:8787
 | V31 | **v0.8.5 방 대화 공유**: 매 호출 프롬프트 앞에 최근 대화(사용자 + 다른 AI 의 완료 답변, 최근 20개·6천 자)를 붙여 AI 끼리 서로의 말을 보고 이어 말한다. 메뉴 → 💬 방 대화 공유 로 끄기. 팀장 내부 단계(①계획·②작업)는 제외. Gemini `--mode plan` 제거('/plan 모드' 멘트 방지) |
 | V30 | **v0.8.2** Gemini → Antigravity CLI(`agy`) 교체: `src/adapters/agy-login.mjs`(pty, 60초 타임아웃 자동 재시도) · `agy-auth-status.mjs`(`agy models` 로 판정, API 키/ADC 차단) · `--input-format stream-json` 으로 프롬프트를 stdin NDJSON 전달 · result 이벤트 파서·usage 정규화 · `--conversation` 재개. Dockerfile 이 공식 스크립트로 agy 설치 |
 | UI | 팀장 모드의 ① 계획 말풍선은 분배 요약만 보이고 계획 JSON 원문은 접어 둠(검토·기억 버튼도 없음). 답은 ③ 종합에만 |
+
+### v0.8.6 → v0.8.7 (코딩·검수 환경 — 2026-10-18 실배포 사례 반영)
+
+팀장 모드로 코딩을 시켰더니 다섯 작업이 전부 '완료'인데 결과물이 없었다. 원인은 코드가 아니라 실행 환경 셋.
+
+| 문제 | 고친 것 |
+| --- | --- |
+| Codex: `bwrap: Creating new namespace failed: Permission denied` — Codex 자체 샌드박스(bubblewrap)가 컨테이너에서 user namespace 를 못 만들어 **파일 읽기조차 실패**, 기본 정책이 읽기 전용이라 쓰기도 불가 | `codex exec` / `exec resume` 에 `--dangerously-bypass-approvals-and-sandbox --skip-git-repo-check`. 컨테이너가 이미 격리돼 있으므로 공식 플래그 설명(externally sandboxed 환경용)대로 내부 샌드박스를 끈다. 명령 출력에 bwrap 오류가 보이면 `sandbox_failed` 로 실패 처리 |
+| Gemini(agy): 빈 결과 3회 연속 — 헤드리스에서 도구 승인 요청이 전부 자동 거부돼 `status SUCCESS` + `response ""` | `--dangerously-skip-permissions` 로 자동 승인. 본문이 빈 답변은 `empty_result` 로 실패 처리(어느 CLI 든) |
+| Claude: `-p` 비대화형에서 권한 요청에 답할 사람이 없어 파일 쓰기·명령 실행이 자동 거부 + 이미지에 **Python 없음** | `--permission-mode acceptEdits` + `--allowedTools Bash WebSearch WebFetch` + `--disallowedTools` 로 **삭제 명령(rm·rmdir·shred·git clean/reset --hard/push --force)과 과금 가능 CLI(railway·gcloud·aws·az·fly·vercel·heroku·npm publish·stripe)** 거부. Dockerfile 에 Python 3.11 · pip · venv · pytest · make · jq · unzip |
+| 사용자 지시: **파일 삭제·추가 과금은 내 허락을 받아라** | 모든 프롬프트(일반·팀장 ①②③) 끝에 [행동 규칙] — 삭제·비우기·과금이 필요하면 멈추고 답변을 `[승인 요청]` 으로 시작해 무엇을 왜 하려는지 쓰게 한다. 서버는 그 답변을 `approvalRequested` 로 표시하고 화면에 ✋ 띠를 띄운다. 사용자가 다음 메시지로 허락하면 진행. Claude 는 위 거부 목록으로 기술적으로도 막히고(확인: `rm` 은 denied, `echo`·`python3`·파일 쓰기는 통과), Codex·agy 는 명령 거부 목록 기능이 없어 규칙 프롬프트로만 전달된다 |
+| '완료' 판정이 "CLI 가 exit 0" 뿐이라 실패한 작업도 완료로 보임 | 빈 본문 → `empty_result`, 샌드박스 오류 → `sandbox_failed`. 파서의 고정 오류 코드(`agy_status_*` 등)는 그대로 화면에 |
+| 팀원이 "실행은 못 해봤다" 로 끝냄 | ② 작업 프롬프트에 [작업 환경] 안내 — 실행·테스트가 가능하니 실제로 돌리고, 안 되면 오류를 그대로 적게. `npm run doctor` 가 Python·pytest·git 도 점검 |
+
+세 CLI 모두 **읽기·수정·새 파일 생성·테스트 실행은 승인 없이** 한다(삭제·과금만 [승인 요청]). 이 허브가 1인용 격리 컨테이너(비root `node` 사용자, 작업 폴더는 `/app/data/users/1/workspace`)에서만 돌아간다는 전제이며, 공유 서버나 호스트에 직접 띄울 때는 플래그를 빼야 한다. 회귀 테스트: `test/v087-coding-env.test.mjs`.
 
 ## 8. 아직 없는 것 (v0.8 후보)
 
