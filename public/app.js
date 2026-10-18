@@ -205,7 +205,7 @@ $('#upload').onchange=async e=>{for(const f of e.target.files){const r=await fet
 // ---- 시트 ----
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$('#'+b.dataset.close).close());
 $('#people-open').onclick=()=>{renderPeople();$('#people').showModal();};
-$('#menu-open').onclick=()=>{renderBadges();$('#menu').showModal();};
+$('#menu-open').onclick=()=>{renderBadges();storageBadge();$('#menu').showModal();};
 const openFromMenu=(id,fn)=>()=>{$('#menu').close();fn?.();$('#'+id).showModal();};
 $('#m-memory').onclick=openFromMenu('memory',async()=>{const r=await api('/api/memory');$('#memory-text').value=r.text;$('#memory-info').textContent=`${r.chars.toLocaleString()}자${r.overLimit?` — 권장 상한 ${r.maxChars.toLocaleString()}자 초과`:''}`;});
 $('#memory-save').onclick=async()=>{try{const r=await api('/api/memory',{method:'POST',body:JSON.stringify({text:$('#memory-text').value})});$('#memory-info').textContent=`저장됨 · ${r.chars.toLocaleString()}자`;state.memory=r;renderBadges();}catch(e){toast(msg(e.message));}};
@@ -214,6 +214,16 @@ $('#m-budget').onclick=openFromMenu('budget',()=>{const b=state.budget;$('#budge
 $('#budget-save').onclick=async()=>{try{const v=$('#budget-in').value;const r=await api('/api/settings/budget',{method:'POST',body:JSON.stringify({monthlyTokens:v===''?null:Number(v)})});state.budget=r.budget;renderBadges();$('#budget').close();toast('예산 저장됨');}catch(e){toast(msg(e.message));}};
 const roomBadge=()=>{$('#room-badge').textContent=state.user?.roomShare===false?'꺼짐':'켜짐 — AI 들이 서로의 말을 봅니다';};
 $('#m-room').onclick=async()=>{const next=state.user?.roomShare===false;try{await api('/api/settings/room',{method:'POST',body:JSON.stringify({share:next})});state.user={...(state.user??{}),roomShare:next};roomBadge();toast(next?'방 대화 공유 켬':'방 대화 공유 끔');}catch(e){toast(msg(e.message));}};
+// v0.9.0 저장 공간: 사용률 표시 + 지금 정리 (자동 정리와 같은 규칙 — 오래된 실행 기록·CLI 대화 기록만, 작업 파일·대화·로그인은 지우지 않음)
+const fmtGB=b=>(b/1073741824).toFixed(2)+'GB';
+async function storageBadge(){try{const s=await api('/api/storage');if(s.usage)$('#storage-badge').textContent=`${s.usage.pct}%`;return s;}catch{return null;}}
+$('#m-storage').onclick=async()=>{
+  const s=await storageBadge();if(!s?.usage){toast('저장 공간을 읽지 못했습니다');return;}
+  const l=s.last;const last=l?`\n마지막 정리: ${new Date(l.at).toLocaleString('ko-KR')} · ${l.deleted}개 삭제 · ${(l.freedBytes/1048576).toFixed(1)}MB 확보`:'\n아직 정리한 적 없음';
+  const text=`사용 중 ${fmtGB(s.usage.used)} / ${fmtGB(s.usage.total)} (${s.usage.pct}%)\n\n자동 정리 규칙\n· ${s.highPct}% 넘으면 ${s.lowPct}% 아래가 될 때까지 오래된 기록부터 삭제\n· ${s.maxAgeDays}일 지난 기록은 항상 삭제\n· 지우는 것: 실행 증거, AI 프로그램의 대화 기록 파일\n· 지우지 않는 것: 작업 파일, 메모리, 이 방의 대화, 로그인 정보${last}\n\n지금 규칙대로 정리할까요?`;
+  if(!confirm(text))return;
+  try{const r=await api('/api/storage/cleanup',{method:'POST',body:'{}'});const x=r.result;toast(x?(x.deleted?`${x.deleted}개 정리 · ${(x.freedBytes/1048576).toFixed(1)}MB 확보 · ${x.after.pct}%`:'지울 대상이 없습니다 (규칙에 맞는 오래된 기록 없음)'):'정리 실패');storageBadge();}catch(e){toast(msg(e.message));}
+};
 $('#m-auth').onclick=async()=>{$('#menu').close();toast('확인 중…');try{await api('/api/auth-check',{method:'POST',body:'{}'});}catch(e){toast(msg(e.message));}};
 $('#m-password').onclick=openFromMenu('password');
 $('#password-form').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);try{await api('/api/settings/password',{method:'POST',body:JSON.stringify({current:f.get('current'),next:f.get('next')})});e.target.reset();$('#password').close();showGate({});toast('변경됨 — 다시 로그인하세요');}catch(x){$('#password-msg').textContent=msg(x.message);}};

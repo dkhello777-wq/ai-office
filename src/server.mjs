@@ -14,6 +14,7 @@ import {Store,sha256} from './store.mjs';
 import {Owner,OWNER_ID,PASSWORD_MIN,validBudgetTokens,validPassword} from './owner.mjs';
 import {randomBytes} from 'node:crypto';
 import {extractPlan} from './orchestrate.mjs';
+import {startJanitor} from './janitor.mjs';
 
 const root=new URL('../',import.meta.url);
 const config=await loadConfig();
@@ -22,6 +23,8 @@ const usersDir=path.resolve(new URL((config.users?.dir??'data/users')+'/',root).
 await mkdir(dataDir,{recursive:true,mode:0o700});await mkdir(usersDir,{recursive:true,mode:0o700});
 for(const d of [dataDir,usersDir]){try{await chmod(d,0o700);}catch{}}
 const adapters=config.adapters.filter(a=>a.enabled);
+// v0.9.0 저장 공간 안전장치: 사용률이 높아지면 오래된 실행 기록·CLI 대화 기록부터 지운다 (src/janitor.mjs, config.storage 로 조정)
+const janitor=startJanitor(usersDir,config.storage??{});
 const MIME={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.txt':'text/plain; charset=utf-8','.md':'text/plain; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.pdf':'application/pdf','.webmanifest':'application/manifest+json'};
 const BUDGET_DEFAULT=(()=>{const raw=process.env.HUB_MONTHLY_TOKENS??config.budget?.monthlyTokens??0;const n=Number(raw);if(!validBudgetTokens(n)){console.error(`월 토큰 상한 값이 잘못됨 (${raw}): 0 이상의 정수만`);process.exit(2);}return n;})();   // 0 = 무제한. 검수 V16: 로드·API 와 같은 검사
 const JSON_BODY_MAX=64*1024;   // 검수 V06: JSON 요청 본문 상한(바이트). 파일 업로드는 limits.uploadBytes.
@@ -294,6 +297,7 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
   finally{ctx.running.delete(ac);if(slot)releaseSlot(ctx);}
   await persistThenEmit(ctx,reply.id);   // 검수 V13: 디스크에 남은 뒤에만 완료를 알린다
   emit(ctx,'budget',budgetFor(ctx));
+  janitor.maybe();   // v0.9.0: 실행이 끝날 때마다 사용률을 보고, 높으면 바로 정리 (기다리지 않음)
   return store.get(reply.id);
 }
 
@@ -415,6 +419,7 @@ const server=http.createServer(async(req,res)=>{
     const ctx=await userContext(user);
 
     if(req.method==='GET'&&url.pathname==='/api/state')return json(res,{...await statePayload(ctx),files:await listFiles(ctx)});
+    if(req.method==='GET'&&url.pathname==='/api/storage')return json(res,await janitor.info());   // v0.9.0
     if(req.method==='GET'&&url.pathname==='/api/memory'){const text=await readMemory(ctx);return json(res,{text,...memoryPublic(text)});}
     if(req.method==='GET'&&url.pathname==='/api/events'){
       res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store','Connection':'keep-alive'});
@@ -515,6 +520,7 @@ const server=http.createServer(async(req,res)=>{
       }
       if(url.pathname==='/api/cli-login/cancel'){const a=await bodyJson(req);const l=a&&ctx.logins[a.adapterId];if(l?.status==='running'&&l.handle)l.handle.cancel();return json(res,{ok:true});}
       // v0.8.8 긴급 중지: 돌고 있는 AI 전부(팀장·팀원·일반 답변)와 대기열을 즉시 끊는다. 로그인 진행은 건드리지 않는다.
+      if(url.pathname==='/api/storage/cleanup'){const r=await janitor.run('manual');return json(res,{ok:!!r,result:r,...(await janitor.info())});}   // v0.9.0 지금 정리 (규칙은 자동 정리와 같다)
       if(url.pathname==='/api/stop'){const stopped=haltRuns(ctx);console.log(`긴급 중지: 실행 ${stopped}건 끊음`);return json(res,{ok:true,stopped});}
       return json(res,{error:'not_found'},404);
     }

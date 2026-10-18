@@ -249,6 +249,14 @@
     "_설명": "업로드 1건 최대 바이트, 메시지·메모리 최대 글자, 동시 CLI 실행 수(넘으면 순서대로 대기)."
   },
   "_호스트": "allowedHosts: 변경 요청(POST)을 받는 Host 목록. 클라우드 배포처럼 도메인을 미리 모를 때는 환경변수 HUB_ALLOWED_HOSTS=* 로 목록 검사를 끈다(Origin 일치 검사는 그대로). HOST=0.0.0.0 과 PORT 도 환경변수로.",
+  "storage": {
+    "highPct": 70,
+    "lowPct": 50,
+    "maxAgeDays": 30,
+    "protectHours": 6,
+    "intervalMinutes": 10,
+    "_설명": "v0.9.0 저장 공간 안전장치(src/janitor.mjs). 데이터 볼륨 사용률이 highPct% 를 넘으면 lowPct% 아래가 될 때까지 오래된 것부터, 그리고 maxAgeDays 일 지난 것은 항상 지운다. 대상은 실행 증거(users/<id>/runs)와 CLI 대화 기록(home/.codex/sessions·.codex/log·.claude/projects)뿐. 작업 폴더·memory.md·state.json·로그인 정보는 지우지 않는다. 최근 protectHours 시간 안에 바뀐 것은 진행 중일 수 있어 건드리지 않는다. 사용자 지시(2026-10-19)로 허락된 자동 삭제."
+  },
   "room": {
     "recent": 20,
     "maxChars": 6000,
