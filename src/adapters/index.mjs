@@ -49,11 +49,23 @@ export const PARSERS={
     if(models&&typeof models==='object'){let input=0,output=0,seen=false;for(const m of Object.values(models)){const t=m?.tokens;if(!t||typeof t!=='object')continue;seen=true;input+=Number(t.prompt)||0;output+=(Number(t.candidates)||0)+(Number(t.thoughts)||0);}if(seen)usage={input,output,raw:models};}
     return {text:data.response??data.result??data.text??'',session:data.session_id??data.sessionId??null,usage,raw:data};
   },
+  // v0.8.2 Antigravity CLI(agy) --output-format stream-json: 한 줄에 이벤트 하나, 마지막 {"event":"result"} 가 최종. status 가 SUCCESS 가 아니면 실패로 던진다(agy 는 그때 exit 3 을 내지만 방어).
+  'agy-stream-json'(stdout){
+    let result=null;
+    for(const line of stdout.split('\n')){const t=line.trim();if(!t.startsWith('{'))continue;let ev;try{ev=JSON.parse(t);}catch{continue;}if(ev&&ev.event==='result'&&ev.result&&typeof ev.result==='object')result=ev.result;}
+    if(!result)throw new Error('agy_result_missing');
+    if(result.status!=='SUCCESS')throw new Error('agy_status_'+String(result.status??'unknown').toLowerCase());
+    const u=result.usage&&typeof result.usage==='object'?result.usage:null;
+    const usage=u?{input:(Number(u.input_tokens)||0)+(Number(u.cache_read_tokens)||0),output:(Number(u.output_tokens)||0)+(Number(u.thinking_tokens)||0),raw:u}:null;
+    return {text:typeof result.response==='string'?result.response:'',session:result.conversation_id||null,usage,raw:result};
+  },
   'mock-json'(stdout){const d=JSON.parse(stdout);return {text:d.text,session:d.session,usage:d.usage??null,raw:d};},
   'plain'(stdout){return {text:stdout.trim(),session:null,usage:null,raw:null};}
 };
 
 const fill=(args,vars)=>args.map(a=>a.replace(/\{(\w+)\}/g,(_,k)=>vars[k]??''));
+// v0.8.2: stdin 으로 넘기는 프롬프트의 포장. 'text'(기본) 는 그대로, 'agy-stream-json' 은 agy --input-format stream-json 이 읽는 NDJSON 한 줄 (Linux 1.4.2 검증: {"event":"user","message":{"role":"user","content":...}}).
+export const STDIN_WRAPS={text:p=>p,'agy-stream-json':p=>JSON.stringify({event:'user',message:{role:'user',content:p}})+'\n'};
 
 // ---- v0.5 스트리밍(부분 출력): 아직 끝나지 않은 stdout 에서 "지금까지의 답변 본문"을 뽑는 파서. 없는 형식은 null → 화면은 진행 표시만. ----
 // 최종 답변은 여전히 PARSERS 가 종료 후 전체 stdout 으로 확정한다. 부분 텍스트는 화면 표시용이며 저장·증거에는 쓰지 않는다.
@@ -179,7 +191,7 @@ export function runAdapter(adapter,{prompt,cwd,session=null,timeoutMs=900000,onC
     let child;
     try{child=spawnChild(adapter.command,args,{cwd,env,stdio:[viaStdin?'pipe':'ignore','pipe','pipe']});}
     catch(e){return reject(Object.assign(new Error('spawn_failed'),{cause:e}));}
-    if(viaStdin){child.stdin.on('error',()=>{});child.stdin.end(prompt);}
+    if(viaStdin){child.stdin.on('error',()=>{});child.stdin.end((STDIN_WRAPS[adapter.stdinFormat??'text']??STDIN_WRAPS.text)(prompt));}
     const out=collector(),err=collector();let timedOut=false,cancelled=false;
     const timer=setTimeout(()=>{timedOut=true;terminateChild(child);},timeoutMs);
     const onAbort=()=>{cancelled=true;terminateChild(child,1000);};   // 계정 중지 등 외부 취소 (GPT R08)
@@ -252,18 +264,16 @@ export const AUTH_PARSERS={
     if(lines.some(l=>/^Not logged in\b/i.test(l)))return {state:'not_logged_in',reason:'not_logged_in_line'};
     return {state:'unverified',reason:lines.length?'unrecognized_output':'empty_output'};
   },
-  // v0.8 Gemini: src/adapters/gemini-auth-status.mjs 가 HOME/.gemini 의 설정·자격 파일을 읽어 낸 JSON. 허용: Google 계정 로그인(oauth-personal) + refresh_token 보유.
-  // 차단: gemini-api-key(API 키), vertex-ai / cloud-shell / 기타(서드파티 경로). 자격 파일 없음 → not_logged_in.
-  'gemini-json'(stdout){
+  // v0.8.2 Antigravity CLI: src/adapters/agy-auth-status.mjs 의 JSON {loggedIn, mode}. mode 'account'(Google 계정 로그인) 만 허용, 'gemini-api-key'(settings.json modelProvider=gemini) 는 차단, 'adc' 는 서드파티.
+  'agy-json'(stdout){
     let d;try{d=JSON.parse(stdout);}catch{return {state:'unverified',reason:'malformed_json'};}
     if(!d||typeof d!=='object'||Array.isArray(d))return {state:'unverified',reason:'unexpected_shape'};
-    const authType=typeof d.authType==='string'?d.authType:null;
-    if(authType==='gemini-api-key')return {state:'api_key',reason:'auth_type_gemini_api_key',authMethod:authType};
-    if(authType&&authType!=='oauth-personal')return {state:'third_party',reason:'auth_type_'+authType,authMethod:authType};
-    if(d.loggedIn===false)return {state:'not_logged_in',reason:d.reason==='no_credentials'?'no_credentials':'logged_in_false',authMethod:authType};
-    if(d.loggedIn!==true)return {state:'unverified',reason:'logged_in_missing',authMethod:authType};
-    if(d.hasRefreshToken!==true)return {state:'unverified',reason:'refresh_token_missing',authMethod:authType};
-    return {state:'subscription',reason:'google_account_oauth',authMethod:'oauth-personal',apiProvider:'google',subscriptionType:'google-account'};
+    const mode=typeof d.mode==='string'?d.mode:null;
+    if(mode==='gemini-api-key')return {state:'api_key',reason:'model_provider_gemini_api_key',authMethod:mode};
+    if(mode&&mode!=='account')return {state:'third_party',reason:'mode_'+mode,authMethod:mode};
+    if(d.loggedIn===false)return {state:'not_logged_in',reason:typeof d.reason==='string'?d.reason.slice(0,40):'logged_in_false',authMethod:mode};
+    if(d.loggedIn!==true)return {state:'unverified',reason:'logged_in_missing',authMethod:mode};
+    return {state:'subscription',reason:'google_account_antigravity',authMethod:'account',apiProvider:'google',subscriptionType:typeof d.tier==='string'?d.tier:'google-account'};
   },
   // 테스트용 모의 CLI: Claude 와 같은 JSON 형식
   'mock-json'(stdout){return AUTH_PARSERS['claude-json'](stdout);}
@@ -271,7 +281,7 @@ export const AUTH_PARSERS={
 // 어떤 스트림을 판정에 쓰는지는 파서별로 정한다 (GPT R01: codex 0.158 의 `login status` 는 "Logged in using ChatGPT" 를 stderr 로 낸다).
 // JSON 파서(claude)는 stdout 만 — stderr 경고가 섞이면 JSON 이 깨지므로 합치지 않는다. 텍스트 행 파서(codex)는 stdout 다음 stderr 를 이어 붙여 본다.
 // 어댑터 authCheck.output 으로 덮어쓸 수 있다: 'stdout' | 'stderr' | 'both'.
-export const AUTH_PARSER_STREAMS={'claude-json':'stdout','codex-text':'both','gemini-json':'stdout','mock-json':'stdout'};
+export const AUTH_PARSER_STREAMS={'claude-json':'stdout','codex-text':'both','agy-json':'stdout','mock-json':'stdout'};
 export function checkAuth(adapter,parentEnv=process.env,extraEnv={},signal=null,cwd=undefined){   // cwd: 실행과 같은 작업 폴더를 주면 프로젝트 설정(.claude/settings.json 등)까지 같은 조건으로 판정 (검수 V09)
   const check=adapter.authCheck;
   if(!check||!Array.isArray(check.args)||!AUTH_PARSERS[check.parser])return Promise.resolve({id:adapter.id,state:'unverified',reason:'no_auth_check_configured'});

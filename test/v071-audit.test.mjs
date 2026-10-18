@@ -268,24 +268,33 @@ test('V28: ANSI colour codes around a login URL or code are stripped (found in p
  assert.equal(stripAnsi('\x1b]8;;https://x.example\x07link\x1b]8;;\x07'),'link','OSC hyperlinks stripped too');
  assert.equal(maskLine('\x1b[31mtoken=abc\x1b[0m'),'token=[가림]');
 });
-test('V29 (v0.8 Gemini): file-based auth status → only Google-account OAuth with refresh_token passes; API key / Vertex blocked; no creds = not_logged_in',async()=>{
- const {loadConfig,AUTH_PARSERS,PARSERS}=await import('../src/adapters/index.mjs');
- const cfg=await loadConfig();const g=cfg.adapters.find(a=>a.id==='gemini');assert.equal(g.authCheck.parser,'gemini-json');assert.equal(g.login.command,'node');
- const H=await mkdtemp(path.join(os.tmpdir(),'gem-'));await mkdir(path.join(H,'.gemini'),{recursive:true});
- assert.equal((await checkAuth(g,process.env,{HOME:H})).state,'not_logged_in');
- await writeFile(path.join(H,'.gemini/settings.json'),JSON.stringify({security:{auth:{selectedType:'oauth-personal'}}}));
- await writeFile(path.join(H,'.gemini/oauth_creds.json'),JSON.stringify({access_token:'a',refresh_token:'r',expiry_date:1}));
- const ok=await checkAuth(g,process.env,{HOME:H});assert.equal(ok.state,'subscription');assert.ok(!JSON.stringify(ok).includes('"r"'),'no token values leak');
- await writeFile(path.join(H,'.gemini/oauth_creds.json'),JSON.stringify({access_token:'a',expiry_date:1}));
- assert.equal((await checkAuth(g,process.env,{HOME:H})).state,'not_logged_in','expired access token without refresh token → re-login');
- for(const [t,st] of [['gemini-api-key','api_key'],['vertex-ai','third_party'],['cloud-shell','third_party']]){await writeFile(path.join(H,'.gemini/settings.json'),JSON.stringify({security:{auth:{selectedType:t}}}));assert.equal((await checkAuth(g,process.env,{HOME:H})).state,st,t);}
- assert.equal(AUTH_PARSERS['gemini-json']('nope').state,'unverified');
- // -o json 의 stats.models 토큰 합산
+test('V29 (v0.8 Gemini): -o json stats.models token sum; login hints drop token endpoints and put the newest URL first',async()=>{
+ const {PARSERS}=await import('../src/adapters/index.mjs');
  const r=PARSERS['gemini-json'](JSON.stringify({response:'hi',stats:{models:{'gemini-2.5-pro':{tokens:{prompt:10,candidates:5,thoughts:2}},'gemini-2.5-flash':{tokens:{prompt:3,candidates:1}}}}}));
  assert.equal(r.text,'hi');assert.deepEqual(normalizeUsage(r.usage),{input:13,output:8});
- // 로그인 힌트: 토큰 교환 endpoint 는 제외, 틀린 코드 뒤 재발급된 URL 이 먼저
  const h=extractLoginHints('visit https://accounts.google.com/o/oauth2/v2/auth?a=1\nEnter code:\nPOST https://oauth2.googleapis.com/token failed\nvisit https://accounts.google.com/o/oauth2/v2/auth?a=2\n');
  assert.deepEqual(h.urls,['https://accounts.google.com/o/oauth2/v2/auth?a=2','https://accounts.google.com/o/oauth2/v2/auth?a=1']);
+});
+test('V30 (v0.8.2 Antigravity): agy stream-json parse/usage, stdin NDJSON wrap, auth JSON → only Google-account login passes',async()=>{
+ const {loadConfig,PARSERS,STDIN_WRAPS,AUTH_PARSERS}=await import('../src/adapters/index.mjs');
+ const cfg=await loadConfig();const g=cfg.adapters.find(a=>a.id==='gemini');assert.equal(g.command,'agy');assert.equal(g.stdinFormat,'agy-stream-json');assert.equal(g.authCheck.parser,'agy-json');
+ const line=STDIN_WRAPS['agy-stream-json']('안녕\n둘째 줄');assert.ok(line.endsWith('\n'));assert.deepEqual(JSON.parse(line),{event:'user',message:{role:'user',content:'안녕\n둘째 줄'}});
+ const out=['{"event":"init","conversation_id":"c1","init":{}}','{"event":"step_update","step_update":{"step_type":"user_input"}}','{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"OK","usage":{"input_tokens":10,"output_tokens":3,"thinking_tokens":2,"cache_read_tokens":5}}}'].join('\n');
+ const r=PARSERS['agy-stream-json'](out);assert.equal(r.text,'OK');assert.equal(r.session,'c1');assert.deepEqual(normalizeUsage(r.usage),{input:15,output:5});
+ assert.throws(()=>PARSERS['agy-stream-json'](out.replace('SUCCESS','ERROR')),/agy_status_error/);
+ assert.throws(()=>PARSERS['agy-stream-json']('{"event":"init"}'),/agy_result_missing/);
+ const A=AUTH_PARSERS['agy-json'];
+ assert.equal(A(JSON.stringify({loggedIn:true,mode:'account'})).state,'subscription');
+ assert.equal(A(JSON.stringify({loggedIn:false,mode:'account',reason:'not_signed_in'})).state,'not_logged_in');
+ assert.equal(A(JSON.stringify({loggedIn:false,mode:'gemini-api-key'})).state,'api_key');
+ assert.equal(A(JSON.stringify({loggedIn:true,mode:'adc'})).state,'third_party');
+ assert.equal(A('x').state,'unverified');
+ // 상태 스크립트: agy 가 없는 환경에서도 비밀값 없이 JSON 을 낸다
+ const H=await mkdtemp(path.join(os.tmpdir(),'agy-'));await mkdir(path.join(H,'.gemini/antigravity-cli'),{recursive:true});
+ await writeFile(path.join(H,'.gemini/antigravity-cli/settings.json'),'{"modelProvider":"gemini"}');
+ assert.equal((await checkAuth(g,{PATH:process.env.PATH},{HOME:H})).state,'api_key');
+ await writeFile(path.join(H,'.gemini/antigravity-cli/settings.json'),'{}');
+ const r2=await checkAuth(g,{PATH:process.env.PATH},{HOME:H});assert.equal(r2.state,'not_logged_in');assert.match(r2.reason,/agy_not_found|exit_/);
  await rm(H,{recursive:true,force:true});
 });
 test('cleanup',async()=>{await terminateAll(200);});

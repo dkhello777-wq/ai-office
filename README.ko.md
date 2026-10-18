@@ -30,9 +30,9 @@ v0.6 의 다인용(계정·초대·관리자)은 뺐습니다. 서버 = 사무�
 
 - **Claude**: 서버가 `claude auth login` 을 띄우고 화면에 **URL** 이 뜹니다. 폰에서 그 URL 을 열어 Claude 구독 계정으로 로그인 → 화면에 나온 코드를 입력칸에 붙여넣고 전송. 끝나면 "● 연결됨 · pro/max".
 - **ChatGPT (Codex)**: `codex login --device-auth`. 미리 ChatGPT 웹 → Settings → Security 에서 **device code 로그인 허용**이 켜져 있어야 합니다. URL 열고 코드 입력.
-- **Gemini** (v0.8): Gemini CLI 에는 로그인 명령이 없어서 허브가 가짜 터미널 안에서 `gemini` 를 `NO_BROWSER` 로 띄웁니다. 화면에 뜨는 **Google 로그인 URL** 을 열어 Gemini 를 쓰는 Google 계정으로 로그인 → 마지막에 보이는 **인증 코드**(`4/0A…` 꼴)를 입력칸에 붙여넣고 전송. 로그인 상태는 상태 명령 대신 `~/.gemini/settings.json`(Google 계정 로그인인지)과 `oauth_creds.json`(refresh_token 유무만)으로 판정합니다. API 키·Vertex 는 차단. Google Workspace 계정은 Google Cloud 프로젝트를 요구할 수 있어 개인 Gmail 계정을 권합니다. 세션 이어가기(2턴 기억)는 Gemini 만 아직 없음 — 매 호출 memory.md 와 원문으로 맥락을 줍니다.
+- **Gemini (Antigravity)** (v0.8.2): Gemini CLI 는 2026년 6월부터 개인 Google 계정 로그인을 거부합니다(`IneligibleTierError`). 그래서 구글이 개인용 후속으로 안내하는 **Antigravity CLI(`agy`)** 를 씁니다 — Google AI Pro/Ultra 구독(무료 플랜도 가능하다고 안내됨)의 Google 계정으로 로그인. **연결하기** → 화면의 Google URL 을 열고 로그인 → 인증 코드를 입력칸에 붙여넣고 전송. ⚠️ agy 는 코드를 **60초**만 기다립니다. 시간이 지나면 새 URL 이 자동으로 뜨니 그 URL 로 다시 하면 됩니다(미리 그 계정으로 Google 에 로그인해 두면 10초면 끝). 로그인 상태는 `agy models` 가 성공하는지로만 판정하고, API 키 모드(`modelProvider: gemini`)·ADC 는 차단. 세션은 `--conversation <id>` 로 이어갑니다.
 
-로그인 정보는 서버의 `/app/data/users/1/home/` 아래에만 저장됩니다. 허브는 토큰을 읽지 않고, 호출 직전마다 공식 CLI 의 **상태 명령**(`claude auth status`, `codex login status`; Gemini 는 설정·자격 파일의 종류만 확인)으로 "구독 로그인"인지만 확인한 뒤 호출합니다. API 키 모드·서드파티 인증이면 차단합니다.
+로그인 정보는 서버의 `/app/data/users/1/home/` 아래에만 저장됩니다. 허브는 토큰을 읽지 않고, 호출 직전마다 공식 CLI 의 **상태 명령**(`claude auth status`, `codex login status`; Gemini 는 `agy models` 성공 여부)으로 "구독 로그인"인지만 확인한 뒤 호출합니다. API 키 모드·서드파티 인증이면 차단합니다.
 
 ## 3. 쓰는 법
 
@@ -128,12 +128,14 @@ npm start         # http://127.0.0.1:8787
 
 | ID | 고친/더한 것 |
 | --- | --- |
-| V29 | Gemini 화면 연결: `src/adapters/gemini-login.mjs`(pty + NO_BROWSER, URL 출력까지 Linux 검증) · `gemini-auth-status.mjs`(파일 기반 판정, 토큰 값은 출력 안 함) · `-o json` 의 `stats.models` 토큰 합산 · 로그인 힌트에서 토큰 교환 endpoint 제외 |
+| V29 | Gemini 화면 연결 1차(Gemini CLI + pty 로그인). 실배포에서 로그인은 되지만 호출이 `IneligibleTierError` 로 거부됨 → v0.8.2 에서 교체. 남은 것: 로그인 힌트에서 토큰 교환 endpoint 제외·최신 URL 우선 |
+| v0.8.1 | 실패한 답변 말풍선에 CLI stderr 꼬리(가림 처리)를 표시 |
+| V30 | **v0.8.2** Gemini → Antigravity CLI(`agy`) 교체: `src/adapters/agy-login.mjs`(pty, 60초 타임아웃 자동 재시도) · `agy-auth-status.mjs`(`agy models` 로 판정, API 키/ADC 차단) · `--input-format stream-json` 으로 프롬프트를 stdin NDJSON 전달 · result 이벤트 파서·usage 정규화 · `--conversation` 재개. Dockerfile 이 공식 스크립트로 agy 설치 |
 | UI | 팀장 모드의 ① 계획 말풍선은 분배 요약만 보이고 계획 JSON 원문은 접어 둠(검토·기억 버튼도 없음). 답은 ③ 종합에만 |
 
 ## 8. 아직 없는 것 (v0.8 후보)
 
-- Gemini 세션 이어가기(`--resume` 이 ID 가 아니라 번호라 보류) · Grok
+- Grok · Gemini 부분 출력(agy stream-json 의 step_update 텍스트)
 - 승인 큐: "돈 쓰기·삭제 전엔 물어봐" 를 방 안의 [승인]/[거부] 버튼으로
 - Claude 부분 출력(stream-json), 도구 권한 모드(`--permission-mode`) 설정
 - 푸시 알림, 대화 검색·내보내기, 스케줄 실행
