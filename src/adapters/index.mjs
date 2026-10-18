@@ -358,9 +358,11 @@ export function startLogin(adapter,{cwd,parentEnv=process.env,extraEnv={},timeou
       let evidence=null,evidenceError=null;
       if(evidenceDir){try{evidence=await writeEvidence(evidenceDir,{stdoutBytes:o.bytes,stderrBytes:e.bytes,meta:{adapter:adapter.id,kind:'login',command:adapter.command,args,exitCode:code,signal,timedOut,elapsedMs:Date.now()-startedAt,envBlockedNames:blockedNames}});}catch(x){evidenceError='evidence_write_failed';}}
       const h=extractLoginHints(combined);
+      // v0.8.3: 끝난 뒤 원인을 화면에서 볼 수 있게 마지막 5줄(가림 처리, 줄당 200자)을 함께 돌려준다. 원문 전체는 증거 파일에만.
+      const tail=stripAnsi(combined).replace(/\r/g,'\n').split('\n').map(l=>l.trim()).filter(Boolean).slice(-5).map(l=>maskLine(l.slice(0,200)));
       // R3: 증거 저장 실패는 로그인에서도 성공이 아니다 (검수 FAIL 3)
       const errCode=evidenceDir&&evidenceError?evidenceError:timedOut?'login_timeout':code===0?null:'login_exit_'+(code??signal);   // 검수 V11: 시간 초과가 exit 0 보다 우선
-      resolve({status:errCode===null?'done':'error',error:errCode,exitCode:code,signal,timedOut,evidence,evidenceError,...h});
+      resolve({status:errCode===null?'done':'error',error:errCode,exitCode:code,signal,timedOut,evidence,evidenceError,tail,...h});
     });
   });
   return {

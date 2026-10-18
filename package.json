@@ -1,6 +1,6 @@
 {
   "name": "ai-hub",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "private": true,
   "type": "module",
   "description": "구독 중인 AI CLI들을 단톡방 하나에서 쓰는 1인용 AI 오피스 — 참여자(연결한 AI)·팀장·메모리·토큰 예산·승인 (클라우드 서버에서 실행, 폰 브라우저로 접속)",

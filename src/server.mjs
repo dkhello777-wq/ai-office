@@ -179,7 +179,7 @@ function budgetFor(ctx){
   return {month:u.month,tokens:u.tokens,calls:u.total.calls,byAdapter:u.byAdapter,limit,exceeded:limit>0&&u.tokens>=limit};
 }
 
-const loginPublic=l=>l?{status:l.status,urls:l.urls??[],codes:l.codes??[],lastLine:l.lastLine??'',error:l.error??null,startedAt:l.startedAt,endedAt:l.endedAt??null}:null;
+const loginPublic=l=>l?{status:l.status,urls:l.urls??[],codes:l.codes??[],lastLine:l.lastLine??'',error:l.error??null,startedAt:l.startedAt,endedAt:l.endedAt??null,tail:l.tail??null,exitCode:l.exitCode??null}:null;
 async function statePayload(ctx){
   const memory=await readMemory(ctx);
   return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream})),messages:ctx.store.state.messages,workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
@@ -335,7 +335,7 @@ function beginLogin(ctx,adapter){
   if(!handle||handle.error){state.status='error';state.error=handle?.error??'login_not_configured';state.endedAt=new Date().toISOString();return {error:state.error};}
   state.handle=handle;
   handle.done.then(async r=>{
-    Object.assign(state,{status:r.status,error:r.error,urls:r.urls??state.urls,codes:r.codes??state.codes,lastLine:'',endedAt:new Date().toISOString(),evidence:r.evidence});   // 끝나면 마지막 줄 비움 (검수 FAIL 4)
+    Object.assign(state,{status:r.status,error:r.error,urls:r.urls??state.urls,codes:r.codes??state.codes,lastLine:'',tail:r.tail??null,exitCode:r.exitCode??null,endedAt:new Date().toISOString(),evidence:r.evidence});   // 끝나면 마지막 줄 비움 (검수 FAIL 4)
     emit(ctx,'cli-login',{adapterId:adapter.id,login:loginPublic(state)});
     await refreshAuth(ctx);   // 로그인 결과를 곧바로 인증 상태에 반영
   });

@@ -101,21 +101,22 @@ function renderHeader(){
   $('#route-lead').textContent=lead?`팀장 ${lead.label}에게`:'팀장에게';
   $('#route-hint').textContent=route==='lead'?(lead?(on.filter(a=>a.id!==lead.id).length?`${lead.label}가 ${on.filter(a=>a.id!==lead.id).map(a=>a.label).join(', ')}에게 나눠 시킵니다`:`팀원이 없어 ${lead.label} 혼자 답합니다`):'참여자에서 팀장을 지정하세요'):(on.length?`${on.map(a=>a.label).join(', ')}에게 동시에`:'연결된 AI 가 없습니다');
 }
+const tailHtml=l=>l.tail?.length?`<details open><summary>CLI 마지막 출력</summary><pre>${esc(l.tail.join('\n'))}</pre></details>`:'';
 function loginBoxHtml(a){
   const l=a.login;if(!l||(l.status==='done'&&connected(a)))return '';
   const urls=l.urls.map(u=>`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a>`).join('');
   const codes=l.codes.map(c=>`<code>${esc(c)}</code>`).join(' ');
   const body=l.status==='running'
     ?`<div><b>1.</b> 아래 주소를 열어 <b>${esc(a.label)} 구독 계정</b>으로 로그인${codes?`<br><b>2.</b> 코드가 필요하면: ${codes}`:''}</div>${urls?`<div class="urls">${urls}</div>`:`<div class="last">주소를 기다리는 중<span class="dots"></span></div>`}${l.lastLine?`<div class="last">${esc(l.lastLine)}</div>`:''}<div class="row"><input class="login-input" placeholder="CLI 가 코드를 요구하면 여기 붙여넣기" autocomplete="off"><button class="btn small login-send">전송</button><button class="btn small login-cancel">취소</button></div>`
-    :l.status==='done'?`<div>연결 명령이 끝났습니다. 상태를 다시 확인했습니다.</div>`
-    :`<div>연결 실패: ${esc(msg(l.error))}</div>`;
+    :l.status==='done'?`<div>연결 명령이 끝났습니다(종료 코드 ${l.exitCode??'-'}). 상태를 다시 확인했습니다.</div>${tailHtml(l)}`
+    :`<div>연결 실패: ${esc(msg(l.error))}</div>${tailHtml(l)}`;
   return `<div class="login-box ${l.status}">${body}</div>`;
 }
 function renderPeople(){
   const list=$('#people-list');
   list.innerHTML=state.adapters.map(a=>{
     const st=a.auth?.state;const isLead=state.lead===a.id;
-    const status=!a.auth?`<span class="pstatus off">○ 확인 중<span class="dots"></span></span>`:st==='subscription'?`<span class="pstatus ok">● ${AUTH_KO[st]}${a.auth.subscriptionType?' · '+esc(a.auth.subscriptionType):''}</span>`:`<span class="pstatus ${st==='not_logged_in'?'off':'bad'}">○ ${AUTH_KO[st]??st}</span>`;
+    const status=!a.auth?`<span class="pstatus off">○ 확인 중<span class="dots"></span></span>`:st==='subscription'?`<span class="pstatus ok">● ${AUTH_KO[st]}${a.auth.subscriptionType?' · '+esc(a.auth.subscriptionType):''}</span>`:`<span class="pstatus ${st==='not_logged_in'?'off':'bad'}">○ ${AUTH_KO[st]??st}${a.auth.reason?` <small>(${esc(a.auth.reason)})</small>`:''}</span>`;
     const running=a.login?.status==='running';
     return `<div class="person" data-id="${a.id}" style="--ai-color:${esc(a.color)}"><div class="av ${connected(a)?'':'off'}">${esc(initial(a))}</div><div class="info"><div class="pname">${esc(a.label)}${isLead?'<span class="lead-tag">팀장</span>':''}</div><div class="prole">${esc(a.roleHint||'')}</div>${status}<div class="pacts">${a.canLogin&&!running?`<button class="btn small primary p-login">${connected(a)?'다시 연결':'연결하기'}</button>`:''}${!a.canLogin?`<span class="hint small">이 AI 는 아직 화면 연결을 지원하지 않습니다</span>`:''}${connected(a)?`<button class="btn small p-lead">${isLead?'팀장 해제':'팀장으로'}</button><button class="btn small p-reset" title="이 AI 의 이어가기 세션을 새로 시작">새 대화</button>`:''}</div><div class="login-slot">${loginBoxHtml(a)}</div></div></div>`;
   }).join('')||'<p class="hint">설정된 AI 가 없습니다 (config/adapters.json)</p>';
