@@ -11,6 +11,7 @@ import {execFile} from 'node:child_process';
 import path from 'node:path';
 import {loadConfig,runAdapter,checkAuth,startLogin,maskLine} from './adapters/index.mjs';
 import {Store,sha256} from './store.mjs';
+import {GDrive} from './gdrive.mjs';
 import {Owner,OWNER_ID,PASSWORD_MIN,validBudgetTokens,validPassword} from './owner.mjs';
 import {randomBytes} from 'node:crypto';
 import {extractPlan} from './orchestrate.mjs';
@@ -45,6 +46,8 @@ if(!owner.isSet&&process.env.HUB_PASSWORD){const r=await owner.setup({password:p
 let setupCode=null;
 if(!owner.isSet){setupCode=randomBytes(9).toString('base64url');const f=path.join(dataDir,'setup-code');await writeFile(f,setupCode+'\n',{mode:0o600});try{await chmod(f,0o600);}catch{}}
 async function consumeSetupCode(){setupCode=null;try{await unlink(path.join(dataDir,'setup-code'));}catch{}}
+// v0.9.2 구글 드라이브로 보내기 (src/gdrive.mjs): GDRIVE_CLIENT_ID·GDRIVE_CLIENT_SECRET 가 있을 때만 켜진다. 업로드는 사람이 누른 버튼으로만, 권한은 drive.file.
+const gdrive=new GDrive({dataDir});await gdrive.load();
 // 호환용 별칭: 아래 코드는 accounts.userById / publicUser 만 쓴다
 const accounts={userById:id=>owner.userById(id),publicUser:u=>owner.publicUser(u)};
 
@@ -193,7 +196,7 @@ function budgetFor(ctx){
 const loginPublic=l=>l?{status:l.status,urls:l.urls??[],codes:l.codes??[],lastLine:l.lastLine??'',error:l.error??null,startedAt:l.startedAt,endedAt:l.endedAt??null,tail:l.tail??null,exitCode:l.exitCode??null}:null;
 async function statePayload(ctx){
   const memory=await readMemory(ctx);
-  return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream})),messages:ctx.store.state.messages,workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
+  return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,avatar:typeof a.avatar==='string'&&/^[\w.\-]+\.(png|jpg)$/.test(a.avatar)?a.avatar:null,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream})),messages:ctx.store.state.messages,workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
 }
 // 프롬프트 합성: (메모리) + (다른 AI 답변 전문) + 본문 + 첨부 안내. 원문을 요약하거나 자르지 않는다.
 // v0.8.5 방 대화 공유: 같은 방의 최근 메시지(사용자 + 다른 AI 의 완료된 답변)를 프롬프트 앞에 붙여, AI 끼리 서로의 말을 보고 이어 말할 수 있게 한다.
@@ -420,6 +423,7 @@ const server=http.createServer(async(req,res)=>{
 
     if(req.method==='GET'&&url.pathname==='/api/state')return json(res,{...await statePayload(ctx),files:await listFiles(ctx)});
     if(req.method==='GET'&&url.pathname==='/api/storage')return json(res,await janitor.info());   // v0.9.0
+    if(req.method==='GET'&&url.pathname==='/api/gdrive')return json(res,gdrive.status());   // v0.9.2
     if(req.method==='GET'&&url.pathname==='/api/memory'){const text=await readMemory(ctx);return json(res,{text,...memoryPublic(text)});}
     if(req.method==='GET'&&url.pathname==='/api/events'){
       res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store','Connection':'keep-alive'});
@@ -485,6 +489,26 @@ const server=http.createServer(async(req,res)=>{
         if(Number(req.headers['content-length']??0)>LIMITS.uploadBytes)return json(res,{error:'file_too_large',max:LIMITS.uploadBytes},413);
         let bytes;try{bytes=await bodyBytes(req,LIMITS.uploadBytes);}catch(e){if(e.message==='body_too_large')return json(res,{error:'file_too_large',max:LIMITS.uploadBytes},413);throw e;}
         await writeFile(path.join(ctx.shared,name),bytes,{mode:0o600});emit(ctx,'files',await listFiles(ctx));return json(res,{ok:true,name,bytes:bytes.length});
+      }
+      // ---- v0.9.2 구글 드라이브: 연결(기기 코드) · 해제 · 파일함 파일 올리기 ----
+      if(url.pathname.startsWith('/api/gdrive/')){
+        const a=await bodyJson(req);if(!a)return json(res,{error:'invalid_json'},400);
+        try{
+          if(url.pathname==='/api/gdrive/connect')return json(res,await gdrive.connect());
+          if(url.pathname==='/api/gdrive/cancel'){gdrive.cancel();return json(res,gdrive.status());}
+          if(url.pathname==='/api/gdrive/disconnect')return json(res,await gdrive.disconnect());
+          if(url.pathname==='/api/gdrive/upload'){
+            const name=safeName(a.name);const p=path.join(ctx.shared,name);
+            const r=await gdrive.upload(p,name,(MIME[path.extname(name).toLowerCase()]??'application/octet-stream').split(';')[0]);
+            return json(res,{ok:true,...r});
+          }
+        }catch(e){
+          if(e.code==='ENOENT'||e.message==='file_not_found')return json(res,{error:'file_not_found'},404);
+          console.error('gdrive',e.message,e.detail??'');
+          const st={gdrive_not_configured:409,gdrive_not_connected:409,gdrive_reconnect_required:409,gdrive_file_too_large:413}[e.message]??502;
+          return json(res,{error:e.message,...(e.max?{max:e.max}:{})},st);
+        }
+        return json(res,{error:'not_found'},404);
       }
       if(url.pathname==='/api/save'){
         const a=await bodyJson(req);const m=a&&ctx.store.get(a.messageId);if(!m||typeof m.text!=='string')return json(res,{error:'message_not_found'},404);

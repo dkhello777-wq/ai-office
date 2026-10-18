@@ -3,8 +3,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#1b1d22">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16181c" media="(prefers-color-scheme: dark)">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap">
 <title>AI 오피스</title>
 <link rel="stylesheet" href="/style.css">
 <body>
@@ -33,22 +37,24 @@
     </div>
     <button id="stop" class="stop" title="돌고 있는 AI 전부를 즉시 멈춥니다 (끝난 답변은 그대로)" hidden>🛑 긴급 중지</button>
     <button id="people-open" class="avatars" title="참여자"></button>
-    <button id="menu-open" class="icon" title="메뉴">☰</button>
+    <button id="menu-open" class="icon round" title="메뉴" aria-label="메뉴"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 8h14M5 16h14"/></svg></button>
   </header>
 
   <main id="chat"><div id="timeline"></div></main>
 
   <footer id="composer">
-    <div id="route" class="route">
-      <button id="route-all" class="chip on" title="연결된 AI 전부에게 동시에 보냄">모두에게</button>
-      <button id="route-lead" class="chip" title="팀장이 받아서 팀원에게 나누고 종합">팀장에게</button>
-      <span id="route-hint" class="route-hint"></span>
-    </div>
     <div id="attach-row" class="attach-row" hidden></div>
-    <div class="row">
-      <label class="icon" title="파일 첨부">📎<input id="upload" type="file" multiple hidden></label>
-      <textarea id="text" rows="1" placeholder="메시지… (Enter 전송 · Shift+Enter 줄바꿈 · @클로드 처럼 부르면 그 AI 에게만)"></textarea>
-      <button id="send" class="send" title="보내기 (Ctrl+Enter)">➤</button>
+    <div class="box">
+      <textarea id="text" rows="1" placeholder="무엇이든 물어보세요 · @클로드 처럼 부르면 그 AI 에게만"></textarea>
+      <div class="tools">
+        <label class="icon round" title="파일 첨부"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span class="sr">파일 첨부</span><input id="upload" type="file" multiple hidden></label>
+        <div id="route" class="route">
+          <button id="route-all" class="chip on" title="연결된 AI 전부에게 동시에 보냄">모두에게</button>
+          <button id="route-lead" class="chip" title="팀장이 받아서 팀원에게 나누고 종합">팀장에게</button>
+          <span id="route-hint" class="route-hint"></span>
+        </div>
+        <button id="send" class="send" title="보내기 (Enter)" aria-label="보내기"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V6M6 11l6-6 6 6"/></svg></button>
+      </div>
     </div>
   </footer>
 </div>
@@ -64,7 +70,7 @@
   <div class="sheet-head"><b>메뉴</b><button class="icon close" data-close="menu">✕</button></div>
   <div class="menu-list">
     <button id="m-memory">🧠 메모리 <small id="memory-badge"></small></button>
-    <button id="m-files">📁 파일 <small id="files-badge"></small></button>
+    <button id="m-files">📁 파일함 · 드라이브 <small id="files-badge"></small></button>
     <button id="m-budget">📊 토큰 예산 <small id="budget-badge"></small></button>
     <button id="m-room">💬 방 대화 공유 <small id="room-badge"></small></button>
     <button id="m-storage">💽 저장 공간 <small id="storage-badge"></small></button>
@@ -81,7 +87,8 @@
 </dialog>
 
 <dialog id="files" class="sheet">
-  <div class="sheet-head"><b>파일</b><span class="hint">AI 가 작업 폴더에서 직접 읽습니다</span><button class="icon close" data-close="files">✕</button></div>
+  <div class="sheet-head"><b>파일함</b><span class="hint">AI 가 shared 폴더에서 직접 읽습니다</span><button class="icon close" data-close="files">✕</button></div>
+  <div id="gdrive-bar" class="gdrive"></div>
   <ul id="filelist"></ul>
 </dialog>
 

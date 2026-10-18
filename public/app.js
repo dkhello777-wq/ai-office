@@ -14,8 +14,10 @@ const ad=id=>state.adapters.find(a=>a.id===id);
 const label=id=>ad(id)?.label??id;
 const color=id=>ad(id)?.color??'#888';
 const initial=a=>(a.label??a.id??'?').replace(/\s*\(.*\)/,'').trim()[0]?.toUpperCase()??'?';
+// v0.9.2 캐릭터 아바타: config 의 avatar 이미지가 있으면 그림, 못 불러오면 첫 글자로 (이미지가 사라지면 아래 글자가 보인다)
+const avHtml=(a,cls='')=>`<span class="av ${cls}" style="--ai-color:${esc(a.color??'#888')}" title="${esc(a.label??a.id)}">${esc(initial(a))}${a.avatar?`<img src="/${esc(a.avatar)}" alt="" onerror="this.remove()">`:''}</span>`;
 const connected=a=>a.auth?.state==='subscription';
-const ERR={setup_code_invalid:'설정 코드가 맞지 않습니다 — 서버 로그(또는 data/setup-code)의 코드를 넣으세요',persist_failed:'답은 받았지만 저장에 실패했습니다 (서버 디스크 확인)',interrupted:'서버가 재시작되어 중단됨',body_too_large:'요청이 너무 큽니다',login_required:'로그인이 필요합니다',login_invalid:'비밀번호가 맞지 않습니다',too_many_attempts:'실패가 많아 15분간 잠겼습니다',password_too_short:'비밀번호는 10자 이상',already_set:'이미 비밀번호가 있습니다',login_already_running:'이미 연결 진행 중',login_not_configured:'이 AI 는 화면 연결 명령이 아직 없습니다',budget_exceeded:'이번 달 토큰 상한에 도달 — 메뉴 > 토큰 예산에서 조정',workers_required:'팀원이 될 AI 가 더 연결돼야 합니다',lead_required:'팀장 AI 를 먼저 지정하세요',plan_parse_failed:'팀장이 계획을 JSON 으로 내지 않아 분배를 멈췄습니다',budget_invalid:'상한은 0 이상의 숫자',cancelled:'취소됨',text_too_long:'글자 수 상한 초과',file_too_large:'파일 크기 상한 초과',state_corrupt:'대화 저장 파일이 손상됨',state_unreadable:'대화 저장 파일을 읽을 수 없음',not_logged_in:'아직 연결되지 않음 — 참여자에서 연결하세요',api_key_auth_detected:'API 키 모드라 차단됨 (구독 로그인만 허용)',third_party_auth_detected:'서드파티 인증이라 차단됨',auth_unverified:'인증 상태를 확인할 수 없어 차단됨',cli_not_found:'CLI 가 서버에 설치돼 있지 않음',cli_timeout:'시간 초과',all_tasks_failed:'팀원 작업이 전부 실패해 종합을 건너뜀',stopped:'긴급 중지로 멈춤 — 다음 단계로 가지 않음',empty_result:'답변이 비어 있어 실패로 처리',sandbox_failed:'Codex 샌드박스가 컨테이너에서 못 떠 명령이 실행되지 않음'};
+const ERR={gdrive_not_configured:'서버에 구글 드라이브 설정이 없습니다',gdrive_not_connected:'구글 드라이브가 연결되지 않았습니다',gdrive_reconnect_required:'구글 드라이브 권한이 만료됐습니다 — 다시 연결하세요',gdrive_access_denied:'구글에서 허용하지 않았습니다',gdrive_code_expired:'코드 시간이 지났습니다 — 다시 연결하세요',gdrive_scope_denied:'드라이브 권한을 허용하지 않았습니다',gdrive_device_failed:'구글 연결을 시작하지 못했습니다 (클라이언트 설정 확인)',gdrive_token_failed:'구글 인증에 실패했습니다',gdrive_folder_failed:'드라이브 폴더를 만들지 못했습니다',gdrive_upload_failed:'드라이브 업로드에 실패했습니다',gdrive_file_too_large:'200MB 넘는 파일은 올릴 수 없습니다',file_not_found:'파일이 없습니다',setup_code_invalid:'설정 코드가 맞지 않습니다 — 서버 로그(또는 data/setup-code)의 코드를 넣으세요',persist_failed:'답은 받았지만 저장에 실패했습니다 (서버 디스크 확인)',interrupted:'서버가 재시작되어 중단됨',body_too_large:'요청이 너무 큽니다',login_required:'로그인이 필요합니다',login_invalid:'비밀번호가 맞지 않습니다',too_many_attempts:'실패가 많아 15분간 잠겼습니다',password_too_short:'비밀번호는 10자 이상',already_set:'이미 비밀번호가 있습니다',login_already_running:'이미 연결 진행 중',login_not_configured:'이 AI 는 화면 연결 명령이 아직 없습니다',budget_exceeded:'이번 달 토큰 상한에 도달 — 메뉴 > 토큰 예산에서 조정',workers_required:'팀원이 될 AI 가 더 연결돼야 합니다',lead_required:'팀장 AI 를 먼저 지정하세요',plan_parse_failed:'팀장이 계획을 JSON 으로 내지 않아 분배를 멈췄습니다',budget_invalid:'상한은 0 이상의 숫자',cancelled:'취소됨',text_too_long:'글자 수 상한 초과',file_too_large:'파일 크기 상한 초과',state_corrupt:'대화 저장 파일이 손상됨',state_unreadable:'대화 저장 파일을 읽을 수 없음',not_logged_in:'아직 연결되지 않음 — 참여자에서 연결하세요',api_key_auth_detected:'API 키 모드라 차단됨 (구독 로그인만 허용)',third_party_auth_detected:'서드파티 인증이라 차단됨',auth_unverified:'인증 상태를 확인할 수 없어 차단됨',cli_not_found:'CLI 가 서버에 설치돼 있지 않음',cli_timeout:'시간 초과',all_tasks_failed:'팀원 작업이 전부 실패해 종합을 건너뜀',stopped:'긴급 중지로 멈춤 — 다음 단계로 가지 않음',empty_result:'답변이 비어 있어 실패로 처리',sandbox_failed:'Codex 샌드박스가 컨테이너에서 못 떠 명령이 실행되지 않음'};
 const msg=e=>ERR[e]??e;
 const AUTH_KO={subscription:'연결됨',api_key:'API 키 모드 — 차단',third_party:'서드파티 — 차단',not_logged_in:'연결 필요',unverified:'확인 안 됨'};
 
@@ -82,7 +84,9 @@ function aiHtml(m){
   const auth=m.status==='blocked'&&m.authCheck?`<details><summary>인증 확인</summary><pre>${esc(`${m.authCheck.state} (${m.authCheck.reason})${m.authCheck.subscriptionType?' / 구독 '+m.authCheck.subscriptionType:''}`)}</pre></details>`:'';
   const others=state.adapters.filter(x=>x.id!==m.adapter&&connected(x));
   const acts=m.status==='done'&&m.kind!=='plan'?`<div class="acts">${others.map(x=>`<button data-handoff="${m.id}" data-to="${x.id}">→ ${esc(x.label)} 검토</button>`).join('')}<button data-memo="${m.id}">🧠 기억</button><button data-save="${m.id}">💾 저장</button><button data-copy="${m.id}">복사</button></div>`:'';
-  return `<div class="m ai" id="m${m.id}" style="--ai-color:${esc(a.color)}"><div class="av">${esc(initial(a))}</div><div class="body"><div class="name">${esc(a.label)}</div><div class="bubble ${cls}">${kind}${m.kind==='plan'&&m.status==='done'?plan+body:body+plan}${auth||ev}</div>${acts}<div class="meta"><span>${timeOf(m.at)}</span>${m.status==='done'&&m.elapsedMs?`<span>${(m.elapsedMs/1000).toFixed(1)}s</span>`:''}${m.usage?`<span>${esc(usageShort(m.usage))}</span>`:''}</div></div></div>`;
+  const meta=`<span class="meta">${m.status==='done'&&m.elapsedMs?`<span>${(m.elapsedMs/1000).toFixed(1)}초</span>`:''}<span>${timeOf(m.at)}</span>${m.usage?`<span>${esc(usageShort(m.usage))}</span>`:''}</span>`;
+  // v0.9.2 하얀 도트: 아바타·이름·시간을 한 줄 머리로, 본문은 말풍선 없이 그 아래
+  return `<div class="m ai" id="m${m.id}" style="--ai-color:${esc(a.color)}"><div class="ai-head">${avHtml(a)}<span class="name">${esc(a.label)}</span>${meta}</div><div class="body"><div class="bubble ${cls}">${kind}${m.kind==='plan'&&m.status==='done'?plan+body:body+plan}${auth||ev}</div>${acts}</div></div>`;
 }
 function usageShort(u){const i=u.input??u.input_tokens??u.prompt_tokens,o=u.output??u.output_tokens??u.completion_tokens;return Number.isFinite(i)&&Number.isFinite(o)?`${i}+${o} 토큰`:'';}
 function renderTimeline(){
@@ -125,7 +129,7 @@ function scrollBottom(){const c=$('#chat');c.scrollTop=c.scrollHeight;}
 function renderHeader(){
   const on=state.adapters.filter(connected);
   $('#room-count').textContent=on.length+1;
-  $('#people-open').innerHTML=state.adapters.map(a=>`<span class="av ${connected(a)?'':'off'}" style="--ai-color:${esc(a.color)}" title="${esc(a.label)}">${esc(initial(a))}</span>`).join('')||'<span class="hint">참여자 없음</span>';
+  $('#people-open').innerHTML=state.adapters.map(a=>avHtml(a,connected(a)?'':'off')).join('')||'<span class="hint">참여자 없음</span>';
   const lead=ad(state.lead);
   $('#route-lead').textContent=lead?`팀장 ${lead.label}에게`:'팀장에게';
   $('#route-hint').textContent=route==='lead'?(lead?(on.filter(a=>a.id!==lead.id).length?`${lead.label}가 ${on.filter(a=>a.id!==lead.id).map(a=>a.label).join(', ')}에게 나눠 시킵니다`:`팀원이 없어 ${lead.label} 혼자 답합니다`):'참여자에서 팀장을 지정하세요'):(on.length?`${on.map(a=>a.label).join(', ')}에게 동시에`:'연결된 AI 가 없습니다');
@@ -147,7 +151,7 @@ function renderPeople(){
     const st=a.auth?.state;const isLead=state.lead===a.id;
     const status=!a.auth?`<span class="pstatus off">○ 확인 중<span class="dots"></span></span>`:st==='subscription'?`<span class="pstatus ok">● ${AUTH_KO[st]}${a.auth.subscriptionType?' · '+esc(a.auth.subscriptionType):''}</span>`:`<span class="pstatus ${st==='not_logged_in'?'off':'bad'}">○ ${AUTH_KO[st]??st}${a.auth.reason?` <small>(${esc(a.auth.reason)})</small>`:''}</span>`;
     const running=a.login?.status==='running';
-    return `<div class="person" data-id="${a.id}" style="--ai-color:${esc(a.color)}"><div class="av ${connected(a)?'':'off'}">${esc(initial(a))}</div><div class="info"><div class="pname">${esc(a.label)}${isLead?'<span class="lead-tag">팀장</span>':''}</div><div class="prole">${esc(a.roleHint||'')}</div>${status}<div class="pacts">${a.canLogin&&!running?`<button class="btn small primary p-login">${connected(a)?'다시 연결':'연결하기'}</button>`:''}${!a.canLogin?`<span class="hint small">이 AI 는 아직 화면 연결을 지원하지 않습니다</span>`:''}${connected(a)?`<button class="btn small p-lead">${isLead?'팀장 해제':'팀장으로'}</button><button class="btn small p-reset" title="이 AI 의 이어가기 세션을 새로 시작">새 대화</button>`:''}</div><div class="login-slot">${loginBoxHtml(a)}</div></div></div>`;
+    return `<div class="person" data-id="${a.id}" style="--ai-color:${esc(a.color)}">${avHtml(a,connected(a)?'':'off')}<div class="info"><div class="pname">${esc(a.label)}${isLead?'<span class="lead-tag">팀장</span>':''}</div><div class="prole">${esc(a.roleHint||'')}</div>${status}<div class="pacts">${a.canLogin&&!running?`<button class="btn small primary p-login">${connected(a)?'다시 연결':'연결하기'}</button>`:''}${!a.canLogin?`<span class="hint small">이 AI 는 아직 화면 연결을 지원하지 않습니다</span>`:''}${connected(a)?`<button class="btn small p-lead">${isLead?'팀장 해제':'팀장으로'}</button><button class="btn small p-reset" title="이 AI 의 이어가기 세션을 새로 시작">새 대화</button>`:''}</div><div class="login-slot">${loginBoxHtml(a)}</div></div></div>`;
   }).join('')||'<p class="hint">설정된 AI 가 없습니다 (config/adapters.json)</p>';
   list.querySelectorAll('.person').forEach(p=>{
     const id=p.dataset.id;
@@ -163,11 +167,25 @@ function renderBadges(){
   const m=state.memory;if(m)$('#memory-badge').textContent=m.chars?`${m.chars>=1000?(m.chars/1000).toFixed(1)+'k':m.chars}자${m.overLimit?' ⚠':''}`:'비어 있음';
   $('#files-badge').textContent=state.files.length?state.files.length+'개':'';
 }
+// v0.9.2 파일함 + 구글 드라이브로 보내기: 연결돼 있으면 파일마다 '드라이브로' 버튼. 연결은 기기 코드(폰에서 코드 입력) — 서버가 drive.file 권한으로 "AI 오피스" 폴더에만 올린다.
+let gdrive=null,gdrivePoll=null;
 function renderFiles(){
-  $('#filelist').innerHTML=state.files.map(f=>`<li class="${attached.has(f.name)?'on':''}" data-name="${esc(f.name)}"><span>${esc(f.name)}</span><small>${(f.bytes/1024).toFixed(1)}KB</small><a href="/files/${encodeURIComponent(f.name)}" target="_blank" title="열기">↗</a></li>`).join('')||'<li class="hint">없음 — 📎 로 올리거나 답변을 저장하세요</li>';
-  $('#filelist').querySelectorAll('li[data-name]').forEach(li=>li.onclick=e=>{if(e.target.tagName==='A')return;const n=li.dataset.name;attached.has(n)?attached.delete(n):attached.add(n);renderFiles();renderAttach();});
-  renderBadges();
+  const up=gdrive?.connected;
+  $('#filelist').innerHTML=state.files.map(f=>`<li class="${attached.has(f.name)?'on':''}" data-name="${esc(f.name)}"><span>${esc(f.name)}</span><small>${(f.bytes/1024).toFixed(1)}KB</small>${up?`<button class="btn small gd-up" data-up="${esc(f.name)}">드라이브로</button>`:''}<a href="/files/${encodeURIComponent(f.name)}" target="_blank" title="열기">↗</a></li>`).join('')||'<li class="hint">없음 — + 로 올리거나 답변을 저장하세요</li>';
+  $('#filelist').querySelectorAll('li[data-name]').forEach(li=>li.onclick=e=>{if(e.target.closest('a,button'))return;const n=li.dataset.name;attached.has(n)?attached.delete(n):attached.add(n);renderFiles();renderAttach();});
+  $('#filelist').querySelectorAll('[data-up]').forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent='올리는 중…';try{const r=await api('/api/gdrive/upload',{method:'POST',body:JSON.stringify({name:b.dataset.up})});b.textContent='올림 ✓';toast('드라이브에 올렸습니다 — '+r.name);}catch(e){b.disabled=false;b.textContent='드라이브로';toast(msg(e.message));if(/reconnect|not_connected/.test(e.message))loadGdrive();}});
+  renderGdrive();renderBadges();
 }
+function renderGdrive(){
+  const el=$('#gdrive-bar');if(!el)return;const g=gdrive;
+  if(!g||!g.configured){el.innerHTML='<span class="hint">구글 드라이브로 보내기: 서버에 GDRIVE_CLIENT_ID·GDRIVE_CLIENT_SECRET 를 넣으면 켜집니다</span>';return;}
+  if(g.connected){el.innerHTML=`<span class="gd-on">● 구글 드라이브 연결됨</span>${g.folderUrl?`<a href="${esc(g.folderUrl)}" target="_blank" rel="noopener">AI 오피스 폴더 열기</a>`:''}<button class="btn small" id="gd-off">연결 해제</button>`;$('#gd-off').onclick=async()=>{if(!confirm('구글 드라이브 연결을 해제할까요? 이미 올린 파일은 드라이브에 그대로 남습니다.'))return;gdrive=await api('/api/gdrive/disconnect',{method:'POST',body:'{}'});renderFiles();};return;}
+  if(g.pending){el.innerHTML=`<div><b>1.</b> <a href="${esc(g.pending.verificationUrl)}" target="_blank" rel="noopener">${esc(g.pending.verificationUrl)}</a> 를 열고<br><b>2.</b> 코드 <code>${esc(g.pending.userCode)}</code> 입력 → 허용</div><span class="hint">허용하면 자동으로 연결됩니다<span class="dots"></span></span><button class="btn small" id="gd-cancel">취소</button>`;$('#gd-cancel').onclick=async()=>{gdrive=await api('/api/gdrive/cancel',{method:'POST',body:'{}'});renderGdrive();};return;}
+  el.innerHTML=`<span class="hint">파일을 구글 드라이브 "AI 오피스" 폴더로 보낼 수 있어요${g.lastError?` · 지난 시도: ${esc(msg(g.lastError))}`:''}</span><button class="btn small primary" id="gd-on">드라이브 연결</button>`;
+  $('#gd-on').onclick=async()=>{try{gdrive=await api('/api/gdrive/connect',{method:'POST',body:'{}'});renderGdrive();watchGdrive();}catch(e){toast(msg(e.message));}};
+}
+async function loadGdrive(){try{gdrive=await api('/api/gdrive');}catch{gdrive=null;}renderFiles();}
+function watchGdrive(){clearInterval(gdrivePoll);gdrivePoll=setInterval(async()=>{if(!$('#files').open){clearInterval(gdrivePoll);return;}const was=gdrive?.connected;await loadGdrive();if(!gdrive?.pending){clearInterval(gdrivePoll);if(!was&&gdrive?.connected)toast('구글 드라이브 연결됨');}},3000);}
 function renderAttach(){const row=$('#attach-row');row.hidden=!attached.size;row.innerHTML=[...attached].map(n=>`<span class="chip-s" data-rm="${esc(n)}">📎 ${esc(n)} ✕</span>`).join('');row.querySelectorAll('[data-rm]').forEach(c=>c.onclick=()=>{attached.delete(c.dataset.rm);renderAttach();renderFiles();});}
 function renderAll(){renderHeader();renderTimeline();renderPeople();renderFiles();renderBadges();}
 
@@ -227,7 +245,7 @@ $('#menu-open').onclick=()=>{renderBadges();storageBadge();$('#menu').showModal(
 const openFromMenu=(id,fn)=>()=>{$('#menu').close();fn?.();$('#'+id).showModal();};
 $('#m-memory').onclick=openFromMenu('memory',async()=>{const r=await api('/api/memory');$('#memory-text').value=r.text;$('#memory-info').textContent=`${r.chars.toLocaleString()}자${r.overLimit?` — 권장 상한 ${r.maxChars.toLocaleString()}자 초과`:''}`;});
 $('#memory-save').onclick=async()=>{try{const r=await api('/api/memory',{method:'POST',body:JSON.stringify({text:$('#memory-text').value})});$('#memory-info').textContent=`저장됨 · ${r.chars.toLocaleString()}자`;state.memory=r;renderBadges();}catch(e){toast(msg(e.message));}};
-$('#m-files').onclick=openFromMenu('files',renderFiles);
+$('#m-files').onclick=openFromMenu('files',()=>{renderFiles();loadGdrive().then(()=>{if(gdrive?.pending)watchGdrive();});});
 $('#m-budget').onclick=openFromMenu('budget',()=>{const b=state.budget;$('#budget-now').textContent=b?`${b.month} 사용 ${b.tokens.toLocaleString()} 토큰 · ${b.calls}회 · 상한 ${b.limit?b.limit.toLocaleString():'무제한'}`:'';$('#budget-in').value=b?.limit||'';});
 $('#budget-save').onclick=async()=>{try{const v=$('#budget-in').value;const r=await api('/api/settings/budget',{method:'POST',body:JSON.stringify({monthlyTokens:v===''?null:Number(v)})});state.budget=r.budget;renderBadges();$('#budget').close();toast('예산 저장됨');}catch(e){toast(msg(e.message));}};
 const roomBadge=()=>{$('#room-badge').textContent=state.user?.roomShare===false?'꺼짐':'켜짐 — AI 들이 서로의 말을 봅니다';};
