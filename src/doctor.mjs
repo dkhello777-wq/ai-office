@@ -9,5 +9,10 @@ for(const a of config.adapters){
   console.log(`${r.installed?'✔':'✖'} ${a.label.padEnd(18)} ${a.command}  ${r.installed?r.version:'설치 안 됨 또는 PATH에 없음'}${a.enabled?'':'  (비활성)'}${a.login?'':'  (화면 로그인 명령 미설정 → 호출 차단)'}`);
   if(blockedNames.length)console.log(`   차단된 부모 환경변수(값 미출력): ${blockedNames.join(', ')}`);
 }
+// v0.8.7: 코드 실행·테스트 도구 (AI 가 작업 폴더에서 쓴다)
+for(const [label,command,args] of [['Python','python3',['--version']],['pytest','pytest',['--version']],['git','git',['--version']]]){
+  const r=await probeAdapter({id:label,command,versionArgs:args});
+  console.log(`${r.installed?'✔':'✖'} ${label.padEnd(18)} ${command}  ${r.installed?r.version:'설치 안 됨 또는 PATH에 없음'}`);
+}
 console.log('\n각 사용자는 화면의 "CLI 로그인" 버튼으로 자기 폴더(data/users/<id>/home)에 로그인합니다. 허브는 "subscription" 으로 확인된 어댑터만 호출합니다.');
 console.log('플래그·인증 패턴이 다르면 config/adapters.json 의 args / authCheck / login 을 설치된 버전에 맞게 고치세요.');

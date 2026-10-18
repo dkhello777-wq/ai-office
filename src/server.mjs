@@ -201,6 +201,10 @@ export function roomContext(ctx,{forAdapter,excludeMessageId}){
   if(!lines.length)return '';
   return `[방 대화 — 이 방의 최근 메시지입니다(오래된 것부터). 다른 AI 의 말은 동의·반박·보완해도 됩니다. 당신은 "${label(forAdapter)}" 입니다. 답변에는 이 목록을 다시 쓰지 말고 바로 본론을 쓰세요.]\n${lines.reverse().join('\n')}\n\n`;
 }
+// v0.8.7 행동 규칙(사용자 지시): 파일 삭제와 추가 과금은 사용자 허락을 받는다. 모든 호출(일반·팀장 ①②③)의 프롬프트 맨 끝에 붙는다.
+// CLI 는 비대화형이라 "묻는" 유일한 방법은 멈추고 답변에 적는 것이다. 답변이 [승인 요청] 으로 시작하면 서버가 approvalRequested 로 표시해 화면에서 눈에 띄게 한다.
+export const APPROVAL_MARK='[승인 요청]';
+export const RULES_NOTE=`[행동 규칙 — 반드시 지키세요]\n1. 파일·폴더 삭제, 비우기, 덮어써서 기존 내용을 없애는 일(rm, git clean/reset --hard, 테이블 drop 등)은 하지 마세요.\n2. 돈이 드는 일 — 유료 API·서비스 결제, 구독, 클라우드 자원 생성·배포, 패키지 공개 등 추가 과금이 생길 수 있는 일 — 은 하지 마세요.\n3. 위 두 가지가 꼭 필요하면 거기서 멈추고, 답변 맨 앞을 "${APPROVAL_MARK}" 로 시작해 무엇을 왜 하려는지와 그 외에 끝낸 일을 적으세요. 사용자가 다음 메시지로 허락하면 그때 진행합니다.\n4. 그 밖의 읽기·수정·새 파일 생성·테스트 실행은 허락 없이 진행하세요. 환경 문제로 안 되면 오류를 그대로 적고, 하지 않은 일을 한 것처럼 쓰지 마세요.\n\n`;
 function composePrompt({text,files=[],handoff=null,memory='',room=''}){
   let p='';
   if(memory&&memory.trim())p+=`[내 메모리 — 이전 대화에서 저장해 둔 맥락·결정·취향입니다. 작업 폴더의 memory.md 와 같습니다. 참고만 하고, 사용자 요청이 우선입니다.]\n${memory.trim()}\n\n`;
@@ -208,6 +212,7 @@ function composePrompt({text,files=[],handoff=null,memory='',room=''}){
   if(handoff)p+=`[다른 AI(${handoff.fromLabel})의 답변 전문입니다. 그대로 검토·참고하세요.]\n${handoff.text}\n\n[사용자 요청]\n`;
   p+=text;
   if(files.length)p+=`\n\n[첨부 파일 — 현재 작업 폴더의 shared/ 안에 있습니다. 직접 읽어서 참고하세요]\n`+files.map(f=>`- shared/${f}`).join('\n');
+  p+=`\n\n`+RULES_NOTE.trimEnd();   // v0.8.7 행동 규칙은 맨 끝에 (앞부분의 메모리·방 대화·요청 순서는 그대로)
   return p;
 }
 
@@ -271,7 +276,8 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
     const r=await runAdapter(adapter,{prompt,cwd:ctx.workspace,session,timeoutMs:config.timeoutMs,evidenceDir,extraEnv:userEnv(ctx,adapter),onChunk,signal:ac.signal});
     if(useSession)store.setSession(adapter.id,r.session,epoch);   // "새 대화" 이후에 끝난 실행은 옛 세션을 되살리지 않는다
     const used=store.addUsage(adapter.id,r.usage);
-    store.update(reply.id,{status:'done',text:r.text,usage:r.usage,elapsedMs:r.elapsedMs,session:r.session??session,hash:sha256(r.text),exitCode:r.exitCode,evidence:r.evidence,envBlockedNames:r.envBlockedNames,authCheck:publicAuth(auth),usageMonth:{...used}});
+    const approvalRequested=r.text.trimStart().startsWith(APPROVAL_MARK);   // v0.8.7: 삭제·과금 전 멈춰서 허락을 구한 답변
+    store.update(reply.id,{status:'done',text:r.text,approvalRequested,usage:r.usage,elapsedMs:r.elapsedMs,session:r.session??session,hash:sha256(r.text),exitCode:r.exitCode,evidence:r.evidence,envBlockedNames:r.envBlockedNames,authCheck:publicAuth(auth),usageMonth:{...used}});
   }catch(e){
     const evidenceFailed=/^evidence_/.test(e.message);
     const stderrTail=typeof e.stderr==='string'&&e.stderr.trim()?e.stderr.trim().split('\n').slice(-8).map(l=>maskLine(l.slice(0,300))).join('\n').slice(-1200):null;   // v0.8.1: 실패 원인을 화면에서 볼 수 있게 stderr 꼬리(가림 처리)를 함께 둔다 — 원문은 증거 파일에
@@ -302,7 +308,7 @@ function planPrompt({goal,files,lead,workers,memory,room=''}){
 }
 function synthPrompt({goal,results}){
   const parts=results.map((r,i)=>`--- 작업 ${i+1}: ${r.title||'(제목 없음)'} · 담당 ${r.label} · 상태 ${r.status}${r.error?' ('+r.error+')':''} ---\n${r.text||'(결과 없음)'}`).join('\n\n');
-  return `### HUB:SYNTHESIZE\n당신은 팀장입니다. 아래는 당신이 계획해 팀원들이 수행한 작업 결과 전문입니다. 결과를 검토·종합해 목표에 대한 최종 답변을 작성하세요. 결과끼리 모순되면 지적하고, 실패한 작업은 무엇이 빠졌는지 밝히세요.\n\n[목표]\n${goal}\n\n[팀원 결과]\n${parts}`;
+  return `### HUB:SYNTHESIZE\n당신은 팀장입니다. 아래는 당신이 계획해 팀원들이 수행한 작업 결과 전문입니다. 결과를 검토·종합해 목표에 대한 최종 답변을 작성하세요. 결과끼리 모순되면 지적하고, 실패한 작업은 무엇이 빠졌는지 밝히세요. 팀원이 "${APPROVAL_MARK}" 으로 멈춘 작업이 있으면 최종 답변 맨 앞에 그 요청들을 모아 사용자가 허락/거부를 고를 수 있게 적으세요.\n\n[목표]\n${goal}\n\n[팀원 결과]\n${parts}`;
 }
 async function orchestrate(ctx,{text,files,leadId,workerIds}){
   const {store}=ctx;
@@ -325,10 +331,12 @@ async function orchestrate(ctx,{text,files,leadId,workerIds}){
     }
     // ② 분배 (병렬, 사용자 동시 실행 상한 안에서). 각 작업 프롬프트에는 메모리를 다시 넣지 않되 첨부 파일 목록은 넣는다 (Gemini FAIL1-4).
     const fileNote=files.length?`\n\n[첨부 파일 — 현재 작업 폴더의 shared/ 안에 있습니다. 직접 읽어서 참고하세요]\n`+files.map(f=>`- shared/${f}`).join('\n'):'';
+    // v0.8.7: 팀원 작업 프롬프트에도 행동 규칙(삭제·과금 금지 → [승인 요청])과 작업 환경을 붙인다 — 실행·테스트가 가능하니 "못 해봤다"로 끝내지 말고 실제로 돌려 보게.
+    const envNote=`\n\n[작업 환경] 현재 작업 폴더에서 파일 읽기·쓰기와 명령 실행이 가능합니다(Python 3·pytest·Node 22·git). 코드를 바꿨으면 실제로 실행·테스트해 결과를 보고하세요.`;
     const results=await Promise.all(parsed.tasks.map(async(t,i)=>{
       const w=workers.find(x=>x.id===t.worker);
-      const r=await runOne(ctx,w,{prompt:`### HUB:TASK ${i+1}/${parsed.tasks.length} — ${t.title}\n${t.prompt}${fileNote}`,replyTo:plan.id,kind:'task',extra:{taskTitle:t.title,taskIndex:i+1},useSession:false});
-      return {title:t.title,label:w.label,status:r.status,error:r.error??null,text:r.text??''};
+      const r=await runOne(ctx,w,{prompt:`### HUB:TASK ${i+1}/${parsed.tasks.length} — ${t.title}\n${t.prompt}${envNote}${fileNote}\n\n${RULES_NOTE.trimEnd()}`,replyTo:plan.id,kind:'task',extra:{taskTitle:t.title,taskIndex:i+1},useSession:false});
+      return {title:t.title,label:w.label,status:r.status+(r.approvalRequested?' (승인 요청 — 사용자 허락 대기)':''),error:r.error??null,text:r.text??''};
     }));
     // ③ 종합 — 성공한 작업이 하나도 없으면 팀장을 다시 부르지 않는다 (Gemini FAIL4-2). 중지됐으면 runOne 이 막는다.
     if(isDisabled(ctx)){store.update(plan.id,{orchestrateError:'user_disabled'});emit(ctx,'message',store.get(plan.id));await store.save();return;}
