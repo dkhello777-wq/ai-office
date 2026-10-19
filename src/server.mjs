@@ -309,7 +309,7 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
       const now=Date.now();if(now-lastEmit<150)return;lastEmit=now;
       emit(ctx,'partial',{id:reply.id,adapter:adapter.id,partial:info.partial,bytes:info.bytes,elapsedMs:info.elapsedMs});
     };
-    const r=await runAdapter(adapter,{prompt,cwd:ctx.workspace,session,timeoutMs:config.timeoutMs,evidenceDir,extraEnv:userEnv(ctx,adapter),onChunk,signal:ac.signal});
+    const r=await runAdapter(adapter,{prompt,cwd:ctx.workspace,session,timeoutMs:Number.isSafeInteger(adapter.runTimeoutMs)&&adapter.runTimeoutMs>0?adapter.runTimeoutMs:config.timeoutMs,evidenceDir,extraEnv:userEnv(ctx,adapter),onChunk,signal:ac.signal});
     if(useSession)store.setSession(adapter.id,r.session,epoch);   // "새 대화" 이후에 끝난 실행은 옛 세션을 되살리지 않는다
     const used=store.addUsage(adapter.id,r.usage);
     const approvalRequested=r.text.trimStart().startsWith(APPROVAL_MARK);   // v0.8.7: 삭제·과금 전 멈춰서 허락을 구한 답변

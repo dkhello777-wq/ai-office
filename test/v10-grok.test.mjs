@@ -47,6 +47,9 @@ test('배포 config: Grok 은 구독 로그인(기기 코드)·삭제/과금 차
   const deny=g.args.flatMap((x,i)=>x==='--deny'?[g.args[i+1]]:[]);
   for(const must of ['Bash(rm*)','Bash(git reset --hard*)','Bash(railway*)','Bash(stripe*)'])assert.ok(deny.includes(must),must);
   assert.deepEqual(g.resumeArgs,['-r','{session}']);
+  assert.equal(g.runTimeoutMs,1800000,'v0.10.1: Grok 만 30분');assert.equal(g.args[g.args.indexOf('--max-turns')+1],'40');
+  for(const id of ['claude','codex','gemini'])assert.equal(cfg.adapters.find(a=>a.id===id).runTimeoutMs,undefined,'다른 AI 는 기본 15분');
+  assert.equal(cfg.timeoutMs,900000);
   assert.match(g.roleHint,/트렌드/);assert.equal(g.avatar,'avatar-grok.jpg');
   await readFile(path.join(ROOT,'public/avatar-grok.jpg'));
   const docker=await readFile(path.join(ROOT,'Dockerfile'),'utf8');

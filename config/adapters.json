@@ -197,6 +197,8 @@
         "json",
         "--always-approve",
         "--no-auto-update",
+        "--max-turns",
+        "40",
         "--deny",
         "Bash(rm*)",
         "--deny",
@@ -259,7 +261,9 @@
         ],
         "_근거": "grok login --device-auth: URL 과 코드를 출력하고 승인될 때까지 기다린다(공식 문서 02-authentication). 미검증 — 실배포에서 1회 확인"
       },
-      "roleHint": "트렌드 분석·자료 조사 (X 실시간 반응·웹 검색)"
+      "roleHint": "트렌드 분석·자료 조사 (X 실시간 반응·웹 검색)",
+      "runTimeoutMs": 1800000,
+      "_시간": "v0.10.1: 자료 조사는 검색을 여러 번 돌아 15분(기본 timeoutMs)을 넘겨 끊긴 사례가 있어 Grok 만 30분(runTimeoutMs). 대신 --max-turns 40 으로 같은 검색을 끝없이 반복하는 것은 막는다(헤드리스 전용 플래그, 공식 문서 14-headless)."
     },
     {
       "id": "mock",
