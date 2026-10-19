@@ -69,9 +69,11 @@ function userHtml(m){
   const all=state.adapters.filter(connected).map(a=>a.id);
   const chips=m.mode==='orchestrate'?`<span class="chip-s">팀장 ${esc(label(m.lead))} → ${(m.workers??[]).map(label).map(esc).join(', ')}</span>`
     :(m.targets??[]).length&&!(m.targets.length===all.length&&m.targets.every(t=>all.includes(t)))?`<span class="chip-s">→ ${m.targets.map(label).map(esc).join(', ')}</span>`:'';
-  const files=(m.files??[]).map(f=>`<span class="chip-s">📎 ${esc(f)}</span>`).join('');
+  const files=(m.files??[]).filter(f=>!/\.(png|jpe?g|gif|webp)$/i.test(f)).map(f=>`<span class="chip-s">📎 ${esc(f)}</span>`).join('');
+  const pics=(m.files??[]).filter(f=>/\.(png|jpe?g|gif|webp)$/i.test(f));   // v0.10.3 내가 보낸 이미지는 그림으로
+  const picHtml=pics.length?`<div class="media me-media">${pics.map(f=>{const u='/files/'+encodeURIComponent(f);return `<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="${esc(f)}" loading="lazy"></a>`;}).join('')}</div>`:'';
   const hand=m.handoffFrom?`<span class="chip-s">↪ #${m.handoffFrom} 답변 포함</span>`:'';
-  return `<div class="m me" id="m${m.id}"><div class="body"><div class="bubble">${clip(m.id,m.text,esc(m.text))}</div>${chips||files||hand?`<div class="chips" style="justify-content:flex-end">${chips}${files}${hand}</div>`:''}<div class="meta"><span>${timeOf(m.at)}</span></div></div></div>`;
+  return `<div class="m me" id="m${m.id}"><div class="body">${picHtml}<div class="bubble">${clip(m.id,m.text,esc(m.text))}</div>${chips||files||hand?`<div class="chips" style="justify-content:flex-end">${chips}${files}${hand}</div>`:''}<div class="meta"><span>${timeOf(m.at)}</span></div></div></div>`;
 }
 function aiHtml(m){
   const a=ad(m.adapter)??{id:m.adapter,label:m.adapter,color:'#888'};
@@ -196,7 +198,7 @@ function renderGdrive(){
 }
 async function loadGdrive(){try{gdrive=await api('/api/gdrive');}catch{gdrive=null;}renderFiles();}
 function watchGdrive(){clearInterval(gdrivePoll);gdrivePoll=setInterval(async()=>{if(!$('#files').open){clearInterval(gdrivePoll);return;}const was=gdrive?.connected;await loadGdrive();if(!gdrive?.pending){clearInterval(gdrivePoll);if(!was&&gdrive?.connected)toast('구글 드라이브 연결됨');}},3000);}
-function renderAttach(){const row=$('#attach-row');row.hidden=!attached.size;row.innerHTML=[...attached].map(n=>`<span class="chip-s" data-rm="${esc(n)}">📎 ${esc(n)} ✕</span>`).join('');row.querySelectorAll('[data-rm]').forEach(c=>c.onclick=()=>{attached.delete(c.dataset.rm);renderAttach();renderFiles();});}
+function renderAttach(){const row=$('#attach-row');row.hidden=!attached.size;row.innerHTML=[...attached].map(n=>IMG_RE.test(n)?`<span class="att-img" data-rm="${esc(n)}" title="${esc(n)} — 눌러서 빼기"><img src="/files/${encodeURIComponent(n)}" alt=""><b>✕</b></span>`:`<span class="chip-s" data-rm="${esc(n)}">📎 ${esc(n)} ✕</span>`).join('');row.querySelectorAll('[data-rm]').forEach(c=>c.onclick=()=>{attached.delete(c.dataset.rm);renderAttach();renderFiles();});}
 function renderAll(){renderHeader();renderTimeline();renderPeople();renderFiles();renderBadges();}
 
 // ---- 보내기: 멘션 → 팀장 → 모두 ----
@@ -246,7 +248,35 @@ function autosize(){const t=$('#text');t.style.height='auto';t.style.height=Math
 $('#text').addEventListener('input',autosize);
 $('#route-all').onclick=()=>{route='all';$('#route-all').classList.add('on');$('#route-lead').classList.remove('on');renderHeader();};
 $('#route-lead').onclick=()=>{route='lead';$('#route-lead').classList.add('on');$('#route-all').classList.remove('on');renderHeader();if(!state.lead){toast('참여자에서 팀장을 지정하세요');$('#people').showModal();}};
-$('#upload').onchange=async e=>{for(const f of e.target.files){const r=await fetch('/api/files?name='+encodeURIComponent(f.name),{method:'POST',credentials:'same-origin',body:f});if(r.status===401)return showGate({});const v=await r.json();if(v.name)attached.add(v.name);}e.target.value='';renderAttach();toast('올렸습니다 — 이번 메시지에 첨부됨');};
+// v0.10.3 첨부 한 곳으로: 📎 선택 · 끌어다 놓기 · 붙여넣기(Ctrl/Cmd+V) 모두 여기로
+const IMG_RE=/\.(png|jpe?g|gif|webp)$/i;
+const stamp=()=>new Date().toISOString().replace(/[-:T]/g,'').slice(0,14);
+async function uploadFiles(list){
+  const files=[...list].filter(f=>f&&f.size>0);if(!files.length)return;
+  const max=state.limits?.uploadBytes??50*1024*1024;let n=0;
+  for(const [i,f] of files.entries()){
+    if(f.size>max){toast(`${f.name||'파일'}: ${(max/1048576)|0}MB 넘는 파일은 올릴 수 없어요`);continue;}
+    // 붙여넣은 스크린샷은 이름이 image.png 처럼 같아서 겹친다 → 시각을 붙인다
+    const ext=(f.name?.match(/\.[\w]+$/)?.[0])||('.'+(f.type.split('/')[1]||'bin').replace('jpeg','jpg'));
+    const name=!f.name||/^(image|blob|clipboard)(\.\w+)?$/i.test(f.name)?`붙여넣기-${stamp()}${files.length>1?'-'+(i+1):''}${ext}`:f.name;
+    try{
+      const r=await fetch('/api/files?name='+encodeURIComponent(name),{method:'POST',credentials:'same-origin',body:f});
+      if(r.status===401)return showGate({});
+      const v=await r.json();if(v.name){attached.add(v.name);n++;}else toast(msg(v.error));
+    }catch{toast('올리지 못했어요 — 연결을 확인하세요');}
+  }
+  renderAttach();if(n)toast(n>1?`${n}개 올렸어요 — 이번 메시지에 첨부됨`:'올렸어요 — 이번 메시지에 첨부됨');
+}
+$('#upload').onchange=async e=>{await uploadFiles(e.target.files);e.target.value='';};
+// 붙여넣기: 파일(이미지 포함)이 있으면 첨부로, 글자만이면 평소처럼 입력칸에
+$('#text').addEventListener('paste',e=>{const fs=[...(e.clipboardData?.items??[])].filter(x=>x.kind==='file').map(x=>x.getAsFile()).filter(Boolean);if(!fs.length)return;e.preventDefault();uploadFiles(fs);});
+// 끌어다 놓기: 화면 어디에 놓아도 첨부. 파일을 끌 때만 안내 띠를 보인다
+let dragDepth=0;
+const hasFiles=e=>[...(e.dataTransfer?.types??[])].includes('Files');
+document.addEventListener('dragenter',e=>{if(!hasFiles(e)||$('#app').hidden)return;e.preventDefault();dragDepth++;document.body.classList.add('dragging');});
+document.addEventListener('dragover',e=>{if(!hasFiles(e)||$('#app').hidden)return;e.preventDefault();e.dataTransfer.dropEffect='copy';});
+document.addEventListener('dragleave',e=>{if(!hasFiles(e))return;dragDepth=Math.max(0,dragDepth-1);if(!dragDepth)document.body.classList.remove('dragging');});
+document.addEventListener('drop',e=>{if(!hasFiles(e))return;e.preventDefault();dragDepth=0;document.body.classList.remove('dragging');if(!$('#app').hidden)uploadFiles(e.dataTransfer.files);});
 
 // ---- 시트 ----
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$('#'+b.dataset.close).close());
