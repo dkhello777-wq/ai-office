@@ -11,7 +11,7 @@ test('끌어다 놓기·붙여넣기·📎 가 한 업로드 함수를 쓰고, �
   assert.match(app,/\$\('#attach-btn'\)\.onclick=\(\)=>\{const u=\$\('#upload'\);u\.value='';u\.click\(\);\}/);
   const html=await readFile(new URL('../public/index.html',import.meta.url),'utf8');
   assert.match(html,/<button type="button" id="attach-btn" class="icon round"/);
-  assert.match(html,/<input id="upload" class="sr" type="file" multiple/);assert.ok(!/id="upload"[^>]*hidden/.test(html),'display:none 아님');
+  assert.match(html,/<input id="upload" class="sr" type="file" multiple/);assert.ok(!/id="upload"[^>]*\shidden[\s>]/.test(html),'display:none 아님');
   assert.match(app,/addEventListener\('paste',e=>\{const fs=\[\.\.\.\(e\.clipboardData\?\.items\?\?\[\]\)\]\.filter\(x=>x\.kind==='file'\)/);
   assert.match(app,/if\(!fs\.length\)return;e\.preventDefault\(\);uploadFiles\(fs\)/,'글자만 붙여넣으면 평소처럼');
   assert.match(app,/document\.addEventListener\('drop',e=>\{if\(!hasFiles\(e\)\)return;e\.preventDefault\(\)/);
