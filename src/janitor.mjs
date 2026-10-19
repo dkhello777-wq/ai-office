@@ -13,7 +13,7 @@ import {statfs,readdir,stat,rm} from 'node:fs/promises';
 import path from 'node:path';
 
 export const JANITOR_DEFAULTS={highPct:70,lowPct:50,maxAgeDays:30,protectHours:6,intervalMinutes:10};
-const CLI_LOG_DIRS=['.codex/sessions','.codex/log','.claude/projects'];
+const CLI_LOG_DIRS=['.codex/sessions','.codex/log','.claude/projects','.grok/logs','.grok/memtrace'];   // v0.10: Grok 로그(대화 세션 .grok/sessions 는 이어가기에 쓰여 지우지 않는다)
 
 export async function diskUsage(dir){
   const s=await statfs(dir);

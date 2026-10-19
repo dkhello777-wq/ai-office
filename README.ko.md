@@ -1,4 +1,4 @@
-# AI 오피스 v0.9.2 — 구독 중인 AI 들을 단톡방 하나에서 (1인용 · 클라우드)
+# AI 오피스 v0.10.0 — 구독 중인 AI 들을 단톡방 하나에서 (1인용 · 클라우드)
 
 내 서버 한 대에 띄워 두고, 폰·PC 브라우저로 접속해 **내가 구독 중인 AI 들과 단톡방처럼** 대화합니다. 참여자는 내가 연결한 AI 수만큼: Claude 만 있으면 1:1, ChatGPT(Codex) 까지 연결하면 3인 방.
 
@@ -200,9 +200,23 @@ npm start         # http://127.0.0.1:8787
 
 테스트: `test/v092-gdrive.test.mjs` (가짜 Google 로 연결·폴더·업로드·만료·해제).
 
+### v0.9.2 → v0.10.0 (Grok · 푸시 알림 · Gemini 쉬기)
+
+**Grok 참여** (Grok Build CLI 1.0.62, `@xai-official/grok`): 참여자 → Grok → 연결하기 → 화면의 주소를 열고 코드 입력(기기 코드 방식, X 구독 Premium 이상 계정). 역할: 트렌드 분석·자료 조사(X 실시간 반응·웹 검색). `@그록` 으로 부를 수 있고 기본으로 모두에게에 들어간다.
+- 프롬프트는 사용자 임시 폴더의 0600 파일로 넘기고(`promptVia: "file"`, Node 의 pipe 는 소켓이라 `/dev/stdin` 을 못 연다) 끝나면 지운다.
+- 인증: 상태 명령이 없어 `src/adapters/grok-auth-status.mjs` 가 `~/.grok/auth.json` 의 **키 이름만** 보고 판정(세션 토큰 → 구독, api_key·config.toml 의 모델 키 → 차단). `XAI_API_KEY` 는 넘기지 않는다.
+- 안전: `--always-approve` + `--deny` 규칙(삭제·강제 git·클라우드/결제 CLI). Grok 은 deny 가 always-approve 보다 우선이라 기술적으로 막힌다.
+- 사용량은 X 구독의 주간 공용 한도(그록 앱·Cursor 와 함께)에서 나간다.
+
+**푸시 알림** (`src/push.mjs`, `public/sw.js`): 메뉴 → 🔔 알림 → 이 기기에서 알림 받기. 한 질문의 답이 다 끝나면 한 번, AI 가 [승인 요청] 으로 멈추면 바로. 화면을 보고 있는 동안(30초마다 신호, 45초 유효)은 보내지 않는다. Web Push(VAPID) + RFC 8291 암호화를 외부 패키지 없이 구현 — 크롬은 FCM, 사파리는 Apple 푸시를 거치지만 내용은 암호화돼 있다. 아이폰은 홈 화면에 추가한 앱에서만 된다(iOS 16.4+). 구독 주소는 알려진 푸시 서비스만 받는다.
+
+**Gemini 쉬기** (v0.9.3 작업 포함): Antigravity 의 주간 개인 한도가 앱 사용량과 따로 빨리 닳아, 기본으로 모두에게·팀장 분배에서 빼고(`quietDefault`) 방 대화도 붙이지 않는다(`roomShare:false`). `@제미나이` 로 부르면 답한다. 참여자 화면에서 AI 마다 "모두에게 포함" 을 켜고 끌 수 있다. 한도 소진 오류("Resets in 159h…")를 알아보면 그 시각까지 그 AI 를 띄우지 않고 "10/25 초기화" 처럼 표시한다(직접 풀기 가능).
+
+테스트: `test/v093-quota.test.mjs`, `test/v10-push.test.mjs`, `test/v10-grok.test.mjs` (전체 119개).
+
 ## 8. 아직 없는 것 (v0.8 후보)
 
 - Grok · Gemini 부분 출력(agy stream-json 의 step_update 텍스트)
 - 승인 큐: "돈 쓰기·삭제 전엔 물어봐" 를 방 안의 [승인]/[거부] 버튼으로
 - Claude 부분 출력(stream-json), 도구 권한 모드(`--permission-mode`) 설정
-- 푸시 알림, 대화 검색·내보내기, 스케줄 실행
+- 대화 검색·내보내기, 스케줄 실행, Grok 부분 출력(streaming-json)

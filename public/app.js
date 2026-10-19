@@ -198,7 +198,7 @@ function renderAttach(){const row=$('#attach-row');row.hidden=!attached.size;row
 function renderAll(){renderHeader();renderTimeline();renderPeople();renderFiles();renderBadges();}
 
 // ---- 보내기: 멘션 → 팀장 → 모두 ----
-const ALIAS={claude:['클로드','claude','클'],codex:['코덱스','codex','지피티','챗지피티','gpt','chatgpt','오픈ai','openai'],gemini:['제미나이','제미니','gemini','구글','google'],grok:['그록','grok']};
+const ALIAS={claude:['클로드','claude','클'],codex:['코덱스','codex','지피티','챗지피티','gpt','chatgpt','오픈ai','openai'],gemini:['제미나이','제미니','gemini','구글','google'],grok:['그록','grok','그로크','grk']};
 // 검수 V20: 문장 시작 또는 공백 뒤의 @만 멘션. 별칭 전체 일치 또는 별칭 + 허용된 조사(에게·한테·야·님·아·씨)만. 이메일·패키지명(@scope/x)은 걸리지 않는다.
 const PARTICLES=['에게','한테','야','님','아','씨','에게도','한테도'];
 function parseMentions(text){

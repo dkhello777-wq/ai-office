@@ -1,5 +1,5 @@
 # AI 오피스 — 1인용 클라우드 배포 이미지.
-# 서버(Node 22) + 공식 AI CLI 3종(Claude Code · Codex · Antigravity CLI) + git(Codex 가 작업 폴더에 git 저장소를 요구) + Python 도구(v0.8.7, 코드 실행·테스트용).
+# 서버(Node 22) + 공식 AI CLI 4종(Claude Code · Codex · Antigravity CLI · Grok Build CLI) + git(Codex 가 작업 폴더에 git 저장소를 요구) + Python 도구(v0.8.7, 코드 실행·테스트용).
 # 로그인 정보·대화·파일은 전부 /app/data 에 쌓이므로 그 경로를 영구 볼륨으로 잡아야 재배포해도 유지된다.
 # 검수 V21: 검증한 버전으로 고정 (Linux 에서 상태 명령 출력을 확인한 조합). 올릴 때는 adapters.json 파서와 함께 확인.
 FROM node:22.22.0-bookworm-slim
@@ -17,8 +17,9 @@ RUN apt-get update \
  && python3 --version && python --version && pytest --version
 # python-is-python3 (v0.8.8): AI 가 `python` 이라는 짧은 이름으로 불러도 "command not found" 가 나지 않게 (Debian 은 기본으로 python3 만 둔다).
 
-RUN npm install -g @anthropic-ai/claude-code@2.1.302 @openai/codex@0.163.0 \
- && claude --version && codex --version
+# v0.10: Grok Build CLI(@xai-official/grok) 추가 — 1.0.62 로 Linux 검증(헤드리스 json 출력·--prompt-file·--deny 규칙). 업데이트가 매우 잦아 고정.
+RUN npm install -g @anthropic-ai/claude-code@2.1.302 @openai/codex@0.163.0 @xai-official/grok@1.0.62 \
+ && claude --version && codex --version && grok --version
 # v0.8.2: Gemini 는 Antigravity CLI(agy). Gemini CLI 는 2026-06 부터 개인 Google 계정을 거부(IneligibleTierError). 공식 설치 스크립트가 최신판을 /usr/local/bin 에 둔다
 # (설치 시점 최신 — 1.4.2 로 Linux 검증. 버전 고정 옵션이 스크립트에 없어 매 빌드 최신). 바이너리는 root 소유라 런타임 자동 업데이트는 실패하고 무시된다.
 RUN curl -fsSL https://antigravity.google/cli/install.sh -o /tmp/agy-install.sh \

@@ -185,6 +185,83 @@
       "_v093": "v0.9.3: Antigravity 는 질문마다 큰 고정 오버헤드가 있고 주간 개인 할당량이 따로 잡혀(앱 사용량 화면과 별개) 금방 막힌다. 그래서 기본값으로 '모두에게'·팀장 분배에서 빠지고(@제미나이 로 부를 때만), 방 대화 공유도 붙이지 않는다. 참여자 화면에서 다시 켤 수 있다."
     },
     {
+      "id": "grok",
+      "label": "Grok",
+      "color": "#8E97A8",
+      "avatar": "avatar-grok.jpg",
+      "command": "grok",
+      "args": [
+        "--prompt-file",
+        "{promptFile}",
+        "--output-format",
+        "json",
+        "--always-approve",
+        "--no-auto-update",
+        "--deny",
+        "Bash(rm*)",
+        "--deny",
+        "Bash(rmdir*)",
+        "--deny",
+        "Bash(shred*)",
+        "--deny",
+        "Bash(git clean*)",
+        "--deny",
+        "Bash(git reset --hard*)",
+        "--deny",
+        "Bash(git push --force*)",
+        "--deny",
+        "Bash(git push -f*)",
+        "--deny",
+        "Bash(railway*)",
+        "--deny",
+        "Bash(gcloud*)",
+        "--deny",
+        "Bash(aws *)",
+        "--deny",
+        "Bash(az *)",
+        "--deny",
+        "Bash(flyctl*)",
+        "--deny",
+        "Bash(fly *)",
+        "--deny",
+        "Bash(vercel*)",
+        "--deny",
+        "Bash(heroku*)",
+        "--deny",
+        "Bash(npm publish*)",
+        "--deny",
+        "Bash(stripe*)"
+      ],
+      "_인자": "v0.10 Grok Build CLI 1.0.62(Linux 검증): --prompt-file {promptFile}: 허브가 사용자 임시 폴더에 0600 파일로 쓰고 끝나면 지운다(promptVia 'file'). Node 의 pipe 는 소켓이라 /dev/stdin 을 grok 이 못 연다(ENXIO, 확인). 인자 길이 상한도 피한다. --output-format json 은 끝난 뒤 객체 하나. --always-approve 로 헤드리스 도구 자동 승인, --deny 규칙은 always-approve 보다 우선(공식 문서 22-permissions)이라 삭제·과금 명령을 기술적으로 막는다. --no-auto-update: 이미지 안 바이너리는 root 소유라 갱신도 안 되지만 확인 자체를 끈다.",
+      "resumeArgs": [
+        "-r",
+        "{session}"
+      ],
+      "parse": "grok-json",
+      "versionArgs": [
+        "--version"
+      ],
+      "enabled": true,
+      "promptVia": "file",
+      "authCheck": {
+        "command": "node",
+        "args": [
+          "{root}/src/adapters/grok-auth-status.mjs"
+        ],
+        "parser": "grok-json",
+        "_근거": "grok 에는 상태 명령이 없다. ~/.grok/auth.json 의 키 이름만 보고 판정(값은 안 읽어 냄). config.toml 의 모델별 api_key/env_key 는 차단."
+      },
+      "envAllow": [],
+      "login": {
+        "args": [
+          "login",
+          "--device-auth"
+        ],
+        "_근거": "grok login --device-auth: URL 과 코드를 출력하고 승인될 때까지 기다린다(공식 문서 02-authentication). 미검증 — 실배포에서 1회 확인"
+      },
+      "roleHint": "트렌드 분석·자료 조사 (X 실시간 반응·웹 검색)"
+    },
+    {
       "id": "mock",
       "label": "Mock (테스트)",
       "color": "#888888",

@@ -203,7 +203,7 @@ const isQuiet=a=>{const q=owner.user.quiet??{};return typeof q[a.id]==='boolean'
 // 한도 소진: CLI 가 "Individual quota reached … Resets in 159h53m24s" 처럼 알려 주면 그 시각까지 이 AI 를 띄우지 않는다(매번 실패하며 시간만 쓰지 않게). state.json 에 남아 재시작 뒤에도 유지.
 export function parseQuota(text){
   const t=String(text??'');
-  if(!/individual quota reached|resource_exhausted|quota (?:has been )?(?:reached|exceeded)|usage limit (?:reached|exceeded)/i.test(t))return null;
+  if(!/individual quota reached|resource_exhausted|quota (?:has been )?(?:reached|exceeded)|(?:usage|weekly|rate) limit (?:reached|exceeded|hit)|(?:reached|exceeded|hit) (?:your|the) (?:usage|weekly) (?:limit|allowance)|out of (?:usage|credits)/i.test(t))return null;   // v0.10: Grok·Codex 류 문구도
   const m=/resets? in\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?/i.exec(t);
   const ms=m&&(m[1]||m[2]||m[3])?((+m[1]||0)*3600+(+m[2]||0)*60+(+m[3]||0))*1000:null;
   return {resetMs:ms};
