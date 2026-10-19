@@ -12,6 +12,7 @@ import path from 'node:path';
 import {loadConfig,runAdapter,checkAuth,startLogin,maskLine} from './adapters/index.mjs';
 import {Store,sha256} from './store.mjs';
 import {GDrive} from './gdrive.mjs';
+import {Push} from './push.mjs';
 import {Owner,OWNER_ID,PASSWORD_MIN,validBudgetTokens,validPassword} from './owner.mjs';
 import {randomBytes} from 'node:crypto';
 import {extractPlan} from './orchestrate.mjs';
@@ -48,6 +49,8 @@ if(!owner.isSet){setupCode=randomBytes(9).toString('base64url');const f=path.joi
 async function consumeSetupCode(){setupCode=null;try{await unlink(path.join(dataDir,'setup-code'));}catch{}}
 // v0.9.2 구글 드라이브로 보내기 (src/gdrive.mjs): GDRIVE_CLIENT_ID·GDRIVE_CLIENT_SECRET 가 있을 때만 켜진다. 업로드는 사람이 누른 버튼으로만, 권한은 drive.file.
 const gdrive=new GDrive({dataDir});await gdrive.load();
+// v0.10 푸시 알림 (src/push.mjs): 작업이 끝났을 때·AI 가 허락을 기다릴 때 폰으로. 화면을 보고 있으면(presence) 보내지 않는다.
+const push=new Push({dataDir});await push.load();
 // 호환용 별칭: 아래 코드는 accounts.userById / publicUser 만 쓴다
 const accounts={userById:id=>owner.userById(id),publicUser:u=>owner.publicUser(u)};
 
@@ -194,9 +197,22 @@ function budgetFor(ctx){
 }
 
 const loginPublic=l=>l?{status:l.status,urls:l.urls??[],codes:l.codes??[],lastLine:l.lastLine??'',error:l.error??null,startedAt:l.startedAt,endedAt:l.endedAt??null,tail:l.tail??null,exitCode:l.exitCode??null}:null;
+// ---- v0.9.3 AI 별 '모두에게 빼기' · 사용 한도 쉬는 시간 ----
+// quiet: 모두에게·팀장 분배에서 빠지고 @이름 으로 부를 때만 답한다. 사용자가 정한 값(owner.json quiet) > config 의 quietDefault.
+const isQuiet=a=>{const q=owner.user.quiet??{};return typeof q[a.id]==='boolean'?q[a.id]:!!a.quietDefault;};
+// 한도 소진: CLI 가 "Individual quota reached … Resets in 159h53m24s" 처럼 알려 주면 그 시각까지 이 AI 를 띄우지 않는다(매번 실패하며 시간만 쓰지 않게). state.json 에 남아 재시작 뒤에도 유지.
+export function parseQuota(text){
+  const t=String(text??'');
+  if(!/individual quota reached|resource_exhausted|quota (?:has been )?(?:reached|exceeded)|usage limit (?:reached|exceeded)/i.test(t))return null;
+  const m=/resets? in\s*(?:(\d+)\s*h)?\s*(?:(\d+)\s*m)?\s*(?:(\d+)\s*s)?/i.exec(t);
+  const ms=m&&(m[1]||m[2]||m[3])?((+m[1]||0)*3600+(+m[2]||0)*60+(+m[3]||0))*1000:null;
+  return {resetMs:ms};
+}
+function cooldownOf(ctx,id){const v=ctx.store.state.cooldowns?.[id];return v&&Date.parse(v)>Date.now()?v:null;}
+function setCooldown(ctx,id,iso){const c=ctx.store.state.cooldowns??(ctx.store.state.cooldowns={});if(iso)c[id]=iso;else delete c[id];}
 async function statePayload(ctx){
   const memory=await readMemory(ctx);
-  return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,avatar:typeof a.avatar==='string'&&/^[\w.\-]+\.(png|jpg)$/.test(a.avatar)?a.avatar:null,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream})),messages:ctx.store.state.messages,workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
+  return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,avatar:typeof a.avatar==='string'&&/^[\w.\-]+\.(png|jpg)$/.test(a.avatar)?a.avatar:null,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream,quiet:isQuiet(a),cooldownUntil:cooldownOf(ctx,a.id)})),messages:ctx.store.state.messages,workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
 }
 // 프롬프트 합성: (메모리) + (다른 AI 답변 전문) + 본문 + 첨부 안내. 원문을 요약하거나 자르지 않는다.
 // v0.8.5 방 대화 공유: 같은 방의 최근 메시지(사용자 + 다른 AI 의 완료된 답변)를 프롬프트 앞에 붙여, AI 끼리 서로의 말을 보고 이어 말할 수 있게 한다.
@@ -204,6 +220,7 @@ async function statePayload(ctx){
 const ROOM={recent:config.room?.recent??20,maxChars:config.room?.maxChars??6000,perMessage:config.room?.perMessage??800};
 export function roomContext(ctx,{forAdapter,excludeMessageId}){
   if(ctx.user?.roomShare===false)return '';
+  if(adapters.find(a=>a.id===forAdapter)?.roomShare===false)return '';   // v0.9.3: AI 별로 끔 (Gemini 기본: 오버헤드·할당량 절약)
   const label=id=>adapters.find(a=>a.id===id)?.label??id;
   const msgs=ctx.store.state.messages.filter(m=>m.id!==excludeMessageId&&(m.role==='user'||(m.status==='done'&&m.text&&m.kind!=='plan'&&m.kind!=='task'))).slice(-ROOM.recent);
   const lines=[];let total=0;
@@ -266,6 +283,11 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
       store.update(reply.id,{status:'blocked',error:'user_disabled'});
       await persistThenEmit(ctx,reply.id);return store.get(reply.id);
     }
+    const cool=cooldownOf(ctx,adapter.id);
+    if(cool){   // v0.9.3: 한도 소진으로 쉬는 중 — CLI 를 띄우지 않는다
+      store.update(reply.id,{status:'blocked',error:'quota_cooldown',resetAt:cool});
+      await persistThenEmit(ctx,reply.id);return store.get(reply.id);
+    }
     const auth=await ensureAuth(ctx,adapter,ac.signal);
     if(isDisabled(ctx)||ac.signal.aborted){   // 인증 확인(비동기) 도중 중지됨 → 모델을 띄우지 않는다 (GPT F03)
       store.update(reply.id,{status:'cancelled',error:'cancelled'});
@@ -291,11 +313,15 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
     if(useSession)store.setSession(adapter.id,r.session,epoch);   // "새 대화" 이후에 끝난 실행은 옛 세션을 되살리지 않는다
     const used=store.addUsage(adapter.id,r.usage);
     const approvalRequested=r.text.trimStart().startsWith(APPROVAL_MARK);   // v0.8.7: 삭제·과금 전 멈춰서 허락을 구한 답변
+    if(approvalRequested&&kind==='task'&&!watching(ctx))push.notify('ask',{title:`✋ ${labelOf(adapter.id)}가 허락을 기다려요`,body:firstLine(r.text.replace(/^\s*\[승인 요청\]\s*/,'')),url:`/#m${reply.id}`,tag:`a${reply.id}`}).catch(()=>{});   // v0.10: 팀원은 종합까지 기다리지 않고 바로
     store.update(reply.id,{status:'done',text:r.text,approvalRequested,usage:r.usage,elapsedMs:r.elapsedMs,session:r.session??session,hash:sha256(r.text),exitCode:r.exitCode,evidence:r.evidence,envBlockedNames:r.envBlockedNames,authCheck:publicAuth(auth),usageMonth:{...used}});
   }catch(e){
     const evidenceFailed=/^evidence_/.test(e.message);
     const stderrTail=typeof e.stderr==='string'&&e.stderr.trim()?e.stderr.trim().split('\n').slice(-8).map(l=>maskLine(l.slice(0,300))).join('\n').slice(-1200):null;   // v0.8.1: 실패 원인을 화면에서 볼 수 있게 stderr 꼬리(가림 처리)를 함께 둔다 — 원문은 증거 파일에
-    store.update(reply.id,{status:e.cancelled?'cancelled':'error',error:e.message,stderrTail,exitCode:e.exitCode??null,signal:e.signal??null,timedOut:!!e.timedOut,parseFailed:!!e.parseFailed,elapsedMs:e.elapsedMs??null,evidence:e.evidence??null,evidencePreserved:!!e.evidence&&!evidenceFailed,envBlockedNames:e.envBlockedNames??null,...(evidenceFailed&&typeof e.text==='string'?{text:e.text,hash:sha256(e.text),unstoredAnswer:true}:{})});
+    const quota=!e.cancelled?parseQuota(`${e.stderr??''}\n${e.text??''}\n${e.message??''}`):null;   // v0.9.3 한도 소진 알아보기
+    const resetAt=quota?.resetMs?new Date(Date.now()+quota.resetMs).toISOString():null;
+    if(resetAt){setCooldown(ctx,adapter.id,resetAt);emit(ctx,'state',await statePayload(ctx));}
+    store.update(reply.id,{status:e.cancelled?'cancelled':'error',error:quota?'quota_exhausted':e.message,cliError:quota?e.message:undefined,resetAt,stderrTail,exitCode:e.exitCode??null,signal:e.signal??null,timedOut:!!e.timedOut,parseFailed:!!e.parseFailed,elapsedMs:e.elapsedMs??null,evidence:e.evidence??null,evidencePreserved:!!e.evidence&&!evidenceFailed,envBlockedNames:e.envBlockedNames??null,...(evidenceFailed&&typeof e.text==='string'?{text:e.text,hash:sha256(e.text),unstoredAnswer:true}:{})});
   }
   finally{ctx.running.delete(ac);if(slot)releaseSlot(ctx);}
   await persistThenEmit(ctx,reply.id);   // 검수 V13: 디스크에 남은 뒤에만 완료를 알린다
@@ -304,13 +330,39 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
   return store.get(reply.id);
 }
 
+// ---- v0.10 푸시: 한 질문의 답이 다 끝나면 한 번, 팀원(②)이 허락을 기다리면 바로 ----
+const PRESENCE_MS=45000;   // 화면이 30초마다 "보고 있음" 을 알린다. 45초 안에 신호가 있으면 알림을 보내지 않는다
+const watching=ctx=>(ctx.visibleUntil??0)>Date.now();
+const firstLine=t=>String(t??'').replace(/\s+/g,' ').trim().slice(0,110);
+const labelOf=id=>adapters.find(a=>a.id===id)?.label?.replace(/\s*\(.*\)/,'')??id;
+export function roundSummary(messages,userMsgId){
+  const plans=new Set(messages.filter(m=>m.replyTo===userMsgId&&m.kind==='plan').map(m=>m.id));
+  const mine=messages.filter(m=>m.role==='assistant'&&(m.replyTo===userMsgId||plans.has(m.replyTo)));
+  if(!mine.length||mine.some(m=>m.status==='running'))return null;
+  const ask=mine.find(m=>m.status==='done'&&m.approvalRequested);
+  if(ask)return {kind:'ask',title:`✋ ${labelOf(ask.adapter)}가 허락을 기다려요`,body:firstLine(ask.text.replace(/^\s*\[승인 요청\]\s*/,'')),focus:ask.id};
+  const final=mine.find(m=>m.kind==='final');
+  const shown=final?[final]:mine.filter(m=>m.kind!=='plan'&&m.kind!=='task');
+  const ok=shown.filter(m=>m.status==='done'),bad=mine.filter(m=>m.status==='error'||m.status==='blocked');
+  if(!ok.length&&!bad.length)return null;   // 전부 긴급 중지 → 알리지 않음
+  const who=[...new Set(ok.map(m=>labelOf(m.adapter)))].join('·');
+  const title=ok.length?(final?`✅ 팀 작업 끝 · ${who} 종합`:`💬 ${who} 답변 도착`):'⚠️ 답변 실패';
+  const body=ok.length?firstLine(ok[0].text):bad.map(m=>`${labelOf(m.adapter)}: ${m.error}`).join(' · ');
+  return {kind:'done',title:bad.length&&ok.length?`${title} (${bad.map(m=>labelOf(m.adapter)).join('·')} 실패)`:title,body,focus:(ok[0]??bad[0]).id};
+}
+async function notifyRound(ctx,userMsgId){
+  try{
+    const sum=roundSummary(ctx.store.state.messages,userMsgId);if(!sum||watching(ctx))return;
+    await push.notify(sum.kind,{title:sum.title,body:sum.body,url:`/#m${sum.focus}`,tag:`r${userMsgId}`});
+  }catch(e){console.warn('notifyRound',e.message);}
+}
 async function dispatch(ctx,{text,targets,files,handoff}){
   const {store}=ctx;
   const userMsg=store.add({role:'user',text,files,targets,handoffFrom:handoff?.messageId??null});
   emit(ctx,'message',userMsg);await store.save();
   const memory=await readMemory(ctx);
   const work=Promise.all(targets.map(id=>{const adapter=adapters.find(a=>a.id===id);if(!adapter)return;const prompt=composePrompt({text,files,handoff,memory,room:roomContext(ctx,{forAdapter:adapter.id,excludeMessageId:userMsg.id})});return serialOn(ctx,adapter.id,()=>runOne(ctx,adapter,{prompt,replyTo:userMsg.id}));}));
-  work.catch(e=>console.error('dispatch',e));
+  work.catch(e=>console.error('dispatch',e)).finally(()=>notifyRound(ctx,userMsg.id));   // v0.10 푸시
   return userMsg;
 }
 
@@ -360,7 +412,7 @@ async function orchestrate(ctx,{text,files,leadId,workerIds}){
     if(results.every(r=>r.status!=='done')){store.update(plan.id,{orchestrateError:'all_tasks_failed'});emit(ctx,'message',store.get(plan.id));await store.save();return;}
     await serialOn(ctx,lead.id,()=>runOne(ctx,lead,{prompt:synthPrompt({goal:text,results}),replyTo:userMsg.id,kind:'final',extra:{derivedFrom:plan.id}}));
   })();
-  run.catch(e=>console.error('orchestrate',e));
+  run.catch(e=>console.error('orchestrate',e)).finally(()=>notifyRound(ctx,userMsg.id));   // v0.10 푸시
   return userMsg;
 }
 
@@ -424,6 +476,7 @@ const server=http.createServer(async(req,res)=>{
     if(req.method==='GET'&&url.pathname==='/api/state')return json(res,{...await statePayload(ctx),files:await listFiles(ctx)});
     if(req.method==='GET'&&url.pathname==='/api/storage')return json(res,await janitor.info());   // v0.9.0
     if(req.method==='GET'&&url.pathname==='/api/gdrive')return json(res,gdrive.status());   // v0.9.2
+    if(req.method==='GET'&&url.pathname==='/api/push')return json(res,push.status(url.searchParams.get('endpoint')));   // v0.10
     if(req.method==='GET'&&url.pathname==='/api/memory'){const text=await readMemory(ctx);return json(res,{text,...memoryPublic(text)});}
     if(req.method==='GET'&&url.pathname==='/api/events'){
       res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store','Connection':'keep-alive'});
@@ -452,6 +505,15 @@ const server=http.createServer(async(req,res)=>{
         const id=a.adapterId===null||a.adapterId===undefined||a.adapterId===''?null:String(a.adapterId);
         if(id!==null&&!adapters.some(x=>x.id===id))return json(res,{error:'adapter_not_found'},404);
         await owner.setLead(id);ctx.user=owner.user;emit(ctx,'state',await statePayload(ctx));return json(res,{ok:true,lead:id});
+      }
+      if(url.pathname==='/api/settings/quiet'){   // v0.9.3
+        const ad=adapters.find(x=>x.id===a.adapterId);if(!ad)return json(res,{error:'adapter_not_found'},404);
+        if(typeof a.quiet!=='boolean')return json(res,{error:'quiet_invalid'},400);
+        await owner.setQuiet(ad.id,a.quiet);ctx.user=owner.user;emit(ctx,'state',await statePayload(ctx));return json(res,{ok:true,quiet:a.quiet});
+      }
+      if(url.pathname==='/api/settings/cooldown-clear'){   // v0.9.3: 한도 쉬는 시간 직접 풀기(업그레이드했을 때 등)
+        const ad=adapters.find(x=>x.id===a.adapterId);if(!ad)return json(res,{error:'adapter_not_found'},404);
+        setCooldown(ctx,ad.id,null);await ctx.store.save();emit(ctx,'state',await statePayload(ctx));return json(res,{ok:true});
       }
       if(url.pathname==='/api/settings/room'){
         if(typeof a.share!=='boolean')return json(res,{error:'share_invalid'},400);
@@ -489,6 +551,16 @@ const server=http.createServer(async(req,res)=>{
         if(Number(req.headers['content-length']??0)>LIMITS.uploadBytes)return json(res,{error:'file_too_large',max:LIMITS.uploadBytes},413);
         let bytes;try{bytes=await bodyBytes(req,LIMITS.uploadBytes);}catch(e){if(e.message==='body_too_large')return json(res,{error:'file_too_large',max:LIMITS.uploadBytes},413);throw e;}
         await writeFile(path.join(ctx.shared,name),bytes,{mode:0o600});emit(ctx,'files',await listFiles(ctx));return json(res,{ok:true,name,bytes:bytes.length});
+      }
+      // ---- v0.10 푸시 알림 · 화면 보고 있음 신호 ----
+      if(url.pathname==='/api/presence'){const a=await bodyJson(req);ctx.visibleUntil=a?.visible?Date.now()+PRESENCE_MS:0;return json(res,{ok:true});}
+      if(url.pathname.startsWith('/api/push/')){
+        const a=await bodyJson(req);if(!a)return json(res,{error:'invalid_json'},400);
+        if(url.pathname==='/api/push/subscribe'){const r=await push.subscribe(a.subscription,a.label);return json(res,r.error?{error:r.error}:push.status(a.subscription?.endpoint),r.error?400:200);}
+        if(url.pathname==='/api/push/unsubscribe'){await push.unsubscribe(String(a.endpoint??''));return json(res,push.status());}
+        if(url.pathname==='/api/push/prefs'){await push.setPrefs(a);return json(res,push.status(a.endpoint));}
+        if(url.pathname==='/api/push/test'){const n=await push.notify('test',{title:'🔔 AI 오피스 알림 테스트',body:'이렇게 알려 드릴게요. 눌러서 방으로 가기',url:'/',tag:'test'});return json(res,{ok:true,sent:n});}
+        return json(res,{error:'not_found'},404);
       }
       // ---- v0.9.2 구글 드라이브: 연결(기기 코드) · 해제 · 파일함 파일 올리기 ----
       if(url.pathname.startsWith('/api/gdrive/')){

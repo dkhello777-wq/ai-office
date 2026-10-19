@@ -179,7 +179,10 @@
       },
       "perUserEnv": {},
       "roleHint": "멀티모달·검색·리서치",
-      "avatar": "avatar-gemini.jpg"
+      "avatar": "avatar-gemini.jpg",
+      "quietDefault": true,
+      "roomShare": false,
+      "_v093": "v0.9.3: Antigravity 는 질문마다 큰 고정 오버헤드가 있고 주간 개인 할당량이 따로 잡혀(앱 사용량 화면과 별개) 금방 막힌다. 그래서 기본값으로 '모두에게'·팀장 분배에서 빠지고(@제미나이 로 부를 때만), 방 대화 공유도 붙이지 않는다. 참여자 화면에서 다시 켤 수 있다."
     },
     {
       "id": "mock",
