@@ -7,6 +7,11 @@ test('끌어다 놓기·붙여넣기·📎 가 한 업로드 함수를 쓰고, �
   const app=await readFile(new URL('../public/app.js',import.meta.url),'utf8');
   assert.match(app,/async function uploadFiles\(list\)/);
   assert.match(app,/\$\('#upload'\)\.onchange=async e=>\{await uploadFiles\(e\.target\.files\)/);
+  // v0.10.4 폰: label+hidden input 대신 버튼이 input.click()
+  assert.match(app,/\$\('#attach-btn'\)\.onclick=\(\)=>\{const u=\$\('#upload'\);u\.value='';u\.click\(\);\}/);
+  const html=await readFile(new URL('../public/index.html',import.meta.url),'utf8');
+  assert.match(html,/<button type="button" id="attach-btn" class="icon round"/);
+  assert.match(html,/<input id="upload" class="sr" type="file" multiple/);assert.ok(!/id="upload"[^>]*hidden/.test(html),'display:none 아님');
   assert.match(app,/addEventListener\('paste',e=>\{const fs=\[\.\.\.\(e\.clipboardData\?\.items\?\?\[\]\)\]\.filter\(x=>x\.kind==='file'\)/);
   assert.match(app,/if\(!fs\.length\)return;e\.preventDefault\(\);uploadFiles\(fs\)/,'글자만 붙여넣으면 평소처럼');
   assert.match(app,/document\.addEventListener\('drop',e=>\{if\(!hasFiles\(e\)\)return;e\.preventDefault\(\)/);

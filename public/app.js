@@ -252,7 +252,7 @@ $('#route-lead').onclick=()=>{route='lead';$('#route-lead').classList.add('on');
 const IMG_RE=/\.(png|jpe?g|gif|webp)$/i;
 const stamp=()=>new Date().toISOString().replace(/[-:T]/g,'').slice(0,14);
 async function uploadFiles(list){
-  const files=[...list].filter(f=>f&&f.size>0);if(!files.length)return;
+  const files=[...list].filter(f=>f&&f.size>0);if(!files.length){if([...list].length)toast('빈 파일이라 올리지 않았어요');return;}
   const max=state.limits?.uploadBytes??50*1024*1024;let n=0;
   for(const [i,f] of files.entries()){
     if(f.size>max){toast(`${f.name||'파일'}: ${(max/1048576)|0}MB 넘는 파일은 올릴 수 없어요`);continue;}
@@ -262,11 +262,14 @@ async function uploadFiles(list){
     try{
       const r=await fetch('/api/files?name='+encodeURIComponent(name),{method:'POST',credentials:'same-origin',body:f});
       if(r.status===401)return showGate({});
-      const v=await r.json();if(v.name){attached.add(v.name);n++;}else toast(msg(v.error));
-    }catch{toast('올리지 못했어요 — 연결을 확인하세요');}
+      let v={};try{v=await r.json();}catch{}
+      if(v.name){attached.add(v.name);n++;}else toast(`${msg(v.error||'upload_failed')} (${r.status})`);
+    }catch(e){toast(`올리지 못했어요 — 연결을 확인하세요 (${e?.name||'error'})`);console.warn('upload',e);}
   }
   renderAttach();if(n)toast(n>1?`${n}개 올렸어요 — 이번 메시지에 첨부됨`:'올렸어요 — 이번 메시지에 첨부됨');
 }
+// v0.10.4 📎 는 진짜 버튼 + 숨긴 input.click(): 폰(안드로이드 크롬·홈 화면 앱)에서 label 로 감싼 display:none 입력이 선택창을 못 열던 문제
+$('#attach-btn').onclick=()=>{const u=$('#upload');u.value='';u.click();};
 $('#upload').onchange=async e=>{await uploadFiles(e.target.files);e.target.value='';};
 // 붙여넣기: 파일(이미지 포함)이 있으면 첨부로, 글자만이면 평소처럼 입력칸에
 $('#text').addEventListener('paste',e=>{const fs=[...(e.clipboardData?.items??[])].filter(x=>x.kind==='file').map(x=>x.getAsFile()).filter(Boolean);if(!fs.length)return;e.preventDefault();uploadFiles(fs);});

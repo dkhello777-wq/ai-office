@@ -50,7 +50,7 @@
     <div class="box">
       <textarea id="text" rows="1" placeholder="무엇이든 물어보세요 · @클로드 처럼 부르면 그 AI 에게만"></textarea>
       <div class="tools">
-        <label class="icon round" title="파일 첨부"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span class="sr">파일 첨부</span><input id="upload" type="file" multiple hidden></label>
+        <button type="button" id="attach-btn" class="icon round" title="파일 첨부" aria-label="파일 첨부"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button><input id="upload" class="sr" type="file" multiple tabindex="-1" aria-hidden="true">
         <div id="route" class="route">
           <button id="route-all" class="chip on" title="연결된 AI 전부에게 동시에 보냄">모두에게</button>
           <button id="route-lead" class="chip" title="팀장이 받아서 팀원에게 나누고 종합">팀장에게</button>
