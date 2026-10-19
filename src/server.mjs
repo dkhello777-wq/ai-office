@@ -213,7 +213,7 @@ function cooldownOf(ctx,id){const v=ctx.store.state.cooldowns?.[id];return v&&Da
 function setCooldown(ctx,id,iso){const c=ctx.store.state.cooldowns??(ctx.store.state.cooldowns={});if(iso)c[id]=iso;else delete c[id];}
 async function statePayload(ctx){
   const memory=await readMemory(ctx);
-  return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,avatar:typeof a.avatar==='string'&&/^[\w.\-]+\.(png|jpg)$/.test(a.avatar)?a.avatar:null,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream,quiet:isQuiet(a),cooldownUntil:cooldownOf(ctx,a.id)})),messages:ctx.store.state.messages,workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
+  return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,avatar:typeof a.avatar==='string'&&/^[\w.\-]+\.(png|jpg)$/.test(a.avatar)?a.avatar:null,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream,quiet:isQuiet(a),cooldownUntil:cooldownOf(ctx,a.id)})),messages:ctx.store.state.messages,clearedBefore:ctx.store.clearedBefore(),workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
 }
 // 프롬프트 합성: (메모리) + (다른 AI 답변 전문) + 본문 + 첨부 안내. 원문을 요약하거나 자르지 않는다.
 // v0.8.5 방 대화 공유: 같은 방의 최근 메시지(사용자 + 다른 AI 의 완료된 답변)를 프롬프트 앞에 붙여, AI 끼리 서로의 말을 보고 이어 말할 수 있게 한다.
@@ -633,6 +633,8 @@ const server=http.createServer(async(req,res)=>{
         const entry=`\n## ${new Date().toISOString().slice(0,16).replace('T',' ')} · ${source}\n${body.trim()}\n`;
         await appendMemory(ctx,entry);const mem=memoryPublic(await readMemory(ctx));emit(ctx,'memory',mem);return json(res,{ok:true,...mem});
       }
+      // v0.10.5 방 비우기: AI 가 답하는 중이면 거절(먼저 긴급 중지). 대화 기록 삭제 + 모든 AI 새 대화. 파일함·메모리·사용량은 그대로.
+      if(url.pathname==='/api/clear'){if(ctx.running.size||ctx.queue.length)return json(res,{error:'busy'},409);const n=ctx.store.clear(adapters.map(a=>a.id));await ctx.store.save();emit(ctx,'cleared',{clearedBefore:ctx.store.clearedBefore()});emit(ctx,'state',await statePayload(ctx));return json(res,{ok:true,removed:n});}
       if(url.pathname==='/api/reset'){const a=await bodyJson(req);if(!a)return json(res,{error:'invalid_json'},400);ctx.store.resetSession(a.adapterId);await ctx.store.save();emit(ctx,'state',await statePayload(ctx));return json(res,{ok:true});}
       if(url.pathname==='/api/auth-check'){await refreshAuth(ctx);return json(res,{ok:true,auth:ctx.authState});}
       if(url.pathname==='/api/cli-login'){

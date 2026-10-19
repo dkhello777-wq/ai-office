@@ -38,6 +38,7 @@ export class Store{
     if(d.epochs)for(const v of Object.values(d.epochs))if(!isNat(v))throw bad('epochs');
     if(d.sessions)for(const v of Object.values(d.sessions))if(!(typeof v==='string'||v===null))throw bad('sessions');
     if(d.seq!==undefined&&!isNat(d.seq))throw bad('seq');
+    if(d.clearedBefore!==undefined&&!isNat(d.clearedBefore))throw bad('clearedBefore');
     this.state=d;if(!this.state.usage)this.state.usage={};if(!this.state.epochs)this.state.epochs={};if(!this.state.sessions)this.state.sessions={};if(!this.state.cooldowns||typeof this.state.cooldowns!=='object'||Array.isArray(this.state.cooldowns))this.state.cooldowns={};if(!Number.isSafeInteger(this.state.seq))this.state.seq=Math.max(0,...this.state.messages.map(m=>Number.isSafeInteger(m.seq)?m.seq:0));
   }
   // 저장은 항상 직렬화: 동시에 두 AI가 끝나도 tmp→rename 이 겹치지 않는다. 한 번 실패해도 다음 저장은 이어간다 (검수 FAIL 8). 파일은 0600 (검수 FAIL 9).
@@ -58,6 +59,9 @@ export class Store{
   epoch(adapterId){return this.state.epochs[adapterId]??0;}
   setSession(adapterId,session,epoch=null){if(!session)return false;if(epoch!==null&&epoch!==this.epoch(adapterId))return false;this.state.sessions[adapterId]=session;return true;}
   resetSession(adapterId){delete this.state.sessions[adapterId];this.state.epochs[adapterId]=this.epoch(adapterId)+1;}
+  // v0.10.5 방 비우기: 대화 기록을 지우고 모든 AI 를 새 대화로. id·seq 는 이어서 커지고(화면 앵커·늦은 이벤트 혼동 방지), clearedBefore 미만 id 는 화면이 버린다. 사용량·쉬는 시간은 남긴다.
+  clear(adapterIds=[]){const n=this.state.messages.length;this.state.messages=[];for(const id of new Set([...adapterIds,...Object.keys(this.state.sessions)]))this.resetSession(id);this.state.clearedBefore=this.state.nextId;this.state.seq++;return n;}
+  clearedBefore(){return this.state.clearedBefore??0;}
 
   // ---- v0.5 토큰 예산: 월별·AI별 누적 (벤치마킹: 에이전트별 예산) ----
   addUsage(adapterId,usage,month=monthKey()){
