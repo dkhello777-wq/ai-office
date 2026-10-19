@@ -5,7 +5,7 @@
 //   state.json  → 대화 기록·세션·월별 사용량 / runs/ → 실행 증거(0700/0600)
 // v0.5 추가: 사용자 메모리(memory.md 주입·저장) · 월별 토큰 예산 · 오케스트레이터 모드(팀장 AI 가 분배→종합) · 부분 출력 스트리밍
 import http from 'node:http';
-import {readFile,writeFile,readdir,stat,mkdir,chmod,appendFile,unlink} from 'node:fs/promises';
+import {readFile,writeFile,readdir,stat,mkdir,chmod,appendFile,unlink,realpath} from 'node:fs/promises';
 import {createReadStream} from 'node:fs';
 import {execFile} from 'node:child_process';
 import path from 'node:path';
@@ -13,6 +13,7 @@ import {loadConfig,runAdapter,checkAuth,startLogin,maskLine} from './adapters/in
 import {Store,sha256} from './store.mjs';
 import {GDrive} from './gdrive.mjs';
 import {Push} from './push.mjs';
+import {findNewMedia,collectMedia,MEDIA_EXT} from './media.mjs';
 import {Owner,OWNER_ID,PASSWORD_MIN,validBudgetTokens,validPassword} from './owner.mjs';
 import {randomBytes} from 'node:crypto';
 import {extractPlan} from './orchestrate.mjs';
@@ -27,7 +28,7 @@ for(const d of [dataDir,usersDir]){try{await chmod(d,0o700);}catch{}}
 const adapters=config.adapters.filter(a=>a.enabled);
 // v0.9.0 저장 공간 안전장치: 사용률이 높아지면 오래된 실행 기록·CLI 대화 기록부터 지운다 (src/janitor.mjs, config.storage 로 조정)
 const janitor=startJanitor(usersDir,config.storage??{});
-const MIME={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.txt':'text/plain; charset=utf-8','.md':'text/plain; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.pdf':'application/pdf','.webmanifest':'application/manifest+json'};
+const MIME={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.txt':'text/plain; charset=utf-8','.md':'text/plain; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.mp4':'video/mp4','.webm':'video/webm','.mov':'video/quicktime','.m4v':'video/mp4','.pdf':'application/pdf','.webmanifest':'application/manifest+json'};
 const BUDGET_DEFAULT=(()=>{const raw=process.env.HUB_MONTHLY_TOKENS??config.budget?.monthlyTokens??0;const n=Number(raw);if(!validBudgetTokens(n)){console.error(`월 토큰 상한 값이 잘못됨 (${raw}): 0 이상의 정수만`);process.exit(2);}return n;})();   // 0 = 무제한. 검수 V16: 로드·API 와 같은 검사
 const JSON_BODY_MAX=64*1024;   // 검수 V06: JSON 요청 본문 상한(바이트). 파일 업로드는 limits.uploadBytes.
 const MEMORY_MAX=Number(config.memory?.maxChars??20000);              // 프롬프트에 주입하는 메모리 상한(초과분은 앞부분을 잘라 넣지 않고, 화면에 경고)
@@ -235,6 +236,8 @@ export function roomContext(ctx,{forAdapter,excludeMessageId}){
 // v0.8.7 행동 규칙(사용자 지시): 파일 삭제와 추가 과금은 사용자 허락을 받는다. 모든 호출(일반·팀장 ①②③)의 프롬프트 맨 끝에 붙는다.
 // CLI 는 비대화형이라 "묻는" 유일한 방법은 멈추고 답변에 적는 것이다. 답변이 [승인 요청] 으로 시작하면 서버가 approvalRequested 로 표시해 화면에서 눈에 띄게 한다.
 export const APPROVAL_MARK='[승인 요청]';
+// v0.10.2: 만든 이미지·영상·파일은 shared/ 에 — 방 화면이 답변 아래에 바로 보여 준다(다른 곳에 저장해도 서버가 찾아서 올리지만 이름이 길어진다)
+export const MEDIA_NOTE='[결과 파일] 이미지·영상·문서 등 파일을 만들면 작업 폴더의 shared/ 폴더에 저장하고, 답에 파일 이름을 적으세요. shared/ 의 이미지·영상은 방 화면에 바로 보입니다.';
 export const RULES_NOTE=`[행동 규칙 — 반드시 지키세요]\n1. 파일·폴더 삭제, 비우기, 덮어써서 기존 내용을 없애는 일(rm, git clean/reset --hard, 테이블 drop 등)은 하지 마세요.\n2. 돈이 드는 일 — 유료 API·서비스 결제, 구독, 클라우드 자원 생성·배포, 패키지 공개 등 추가 과금이 생길 수 있는 일 — 은 하지 마세요.\n3. 위 두 가지가 꼭 필요하면 거기서 멈추고, 답변 맨 앞을 "${APPROVAL_MARK}" 로 시작해 무엇을 왜 하려는지와 그 외에 끝낸 일을 적으세요. 사용자가 다음 메시지로 허락하면 그때 진행합니다.\n4. 그 밖의 읽기·수정·새 파일 생성·테스트 실행은 허락 없이 진행하세요. 환경 문제로 안 되면 오류를 그대로 적고, 하지 않은 일을 한 것처럼 쓰지 마세요.\n\n`;
 function composePrompt({text,files=[],handoff=null,memory='',room=''}){
   let p='';
@@ -243,6 +246,7 @@ function composePrompt({text,files=[],handoff=null,memory='',room=''}){
   if(handoff)p+=`[다른 AI(${handoff.fromLabel})의 답변 전문입니다. 그대로 검토·참고하세요.]\n${handoff.text}\n\n[사용자 요청]\n`;
   p+=text;
   if(files.length)p+=`\n\n[첨부 파일 — 현재 작업 폴더의 shared/ 안에 있습니다. 직접 읽어서 참고하세요]\n`+files.map(f=>`- shared/${f}`).join('\n');
+  p+=`\n\n`+MEDIA_NOTE;   // v0.10.2
   p+=`\n\n`+RULES_NOTE.trimEnd();   // v0.8.7 행동 규칙은 맨 끝에 (앞부분의 메모리·방 대화·요청 순서는 그대로)
   return p;
 }
@@ -268,6 +272,22 @@ async function persistThenEmit(ctx,id){
 }
 // 검수 V18: 같은 AI 의 일반 대화(세션 이어가기)는 직렬로. 두 프로세스가 같은 세션을 동시에 resume 하거나 세션 하나가 버려지는 일을 막는다.
 function serialOn(ctx,adapterId,fn){const q=ctx.chains??(ctx.chains=new Map());const next=(q.get(adapterId)??Promise.resolve()).then(fn,fn);q.set(adapterId,next.catch(()=>{}));return next;}
+// ---- v0.10.2 AI 가 만든 이미지·영상을 답변에 붙인다 (src/media.mjs) ----
+async function attachMedia(ctx,adapter,id,since,extraText){
+  try{
+    const m=ctx.store.get(id);if(!m||(m.status!=='done'&&m.status!=='error'))return;
+    const real=async d=>{try{return await realpath(d);}catch{return d;}};
+    const allowed=await Promise.all([ctx.workspace,ctx.home].map(real));
+    const claimed=ctx.claimedMedia??(ctx.claimedMedia=new Set());
+    const files=await findNewMedia({roots:[{dir:ctx.workspace,depth:6},{dir:ctx.home,depth:6}],allowed,since,text:`${m.text??''}\n${extraText??''}`,cwd:ctx.workspace,claimed});
+    if(!files.length)return;
+    for(const f of files)claimed.add(f.path);
+    const media=await collectMedia(files,{shared:ctx.shared,prefix:`${adapter.id}-${id}`,safeName});
+    if(!media.length)return;
+    for(const x of media)claimed.add(path.join(await real(ctx.shared),x.name));
+    ctx.store.update(id,{media});emit(ctx,'files',await listFiles(ctx));
+  }catch(e){console.warn('attachMedia',e.message);}
+}
 // ---- 한 AI 호출 한 번 = 답변 메시지 하나. 인증·예산 게이트 → 실행(부분 출력 스트리밍) → 증거·사용량 기록. ----
 // 반환: 저장된 답변 메시지(status done/blocked/error). 예외를 던지지 않는다.
 async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSession=true}){
@@ -275,7 +295,7 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
   const reply=store.add({role:'assistant',adapter:adapter.id,replyTo,kind,status:'running',text:'',...extra});
   emit(ctx,'message',reply);
   const evidenceDir=path.join(ctx.runs,`${reply.id}-${adapter.id}`);
-  const ac=new AbortController();let slot=false;
+  const ac=new AbortController();let slot=false,runStart=0,mediaText='';
   ctx.running.add(ac);   // 큐 대기·인증 확인·실행을 하나의 취소 수명으로 (GPT F03): 중지되면 어느 단계든 abort 된다
   try{
     await acquireSlot(ctx);slot=true;
@@ -309,21 +329,25 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
       const now=Date.now();if(now-lastEmit<150)return;lastEmit=now;
       emit(ctx,'partial',{id:reply.id,adapter:adapter.id,partial:info.partial,bytes:info.bytes,elapsedMs:info.elapsedMs});
     };
+    runStart=Date.now();   // v0.10.2 이 시각 뒤에 생긴 미디어 파일을 답변에 붙인다
     const r=await runAdapter(adapter,{prompt,cwd:ctx.workspace,session,timeoutMs:Number.isSafeInteger(adapter.runTimeoutMs)&&adapter.runTimeoutMs>0?adapter.runTimeoutMs:config.timeoutMs,evidenceDir,extraEnv:userEnv(ctx,adapter),onChunk,signal:ac.signal});
     if(useSession)store.setSession(adapter.id,r.session,epoch);   // "새 대화" 이후에 끝난 실행은 옛 세션을 되살리지 않는다
     const used=store.addUsage(adapter.id,r.usage);
+    mediaText=`${r.stdout??''}\n${r.stderr??''}`;
     const approvalRequested=r.text.trimStart().startsWith(APPROVAL_MARK);   // v0.8.7: 삭제·과금 전 멈춰서 허락을 구한 답변
     if(approvalRequested&&kind==='task'&&!watching(ctx))push.notify('ask',{title:`✋ ${labelOf(adapter.id)}가 허락을 기다려요`,body:firstLine(r.text.replace(/^\s*\[승인 요청\]\s*/,'')),url:`/#m${reply.id}`,tag:`a${reply.id}`}).catch(()=>{});   // v0.10: 팀원은 종합까지 기다리지 않고 바로
     store.update(reply.id,{status:'done',text:r.text,approvalRequested,usage:r.usage,elapsedMs:r.elapsedMs,session:r.session??session,hash:sha256(r.text),exitCode:r.exitCode,evidence:r.evidence,envBlockedNames:r.envBlockedNames,authCheck:publicAuth(auth),usageMonth:{...used}});
   }catch(e){
     const evidenceFailed=/^evidence_/.test(e.message);
     const stderrTail=typeof e.stderr==='string'&&e.stderr.trim()?e.stderr.trim().split('\n').slice(-8).map(l=>maskLine(l.slice(0,300))).join('\n').slice(-1200):null;   // v0.8.1: 실패 원인을 화면에서 볼 수 있게 stderr 꼬리(가림 처리)를 함께 둔다 — 원문은 증거 파일에
+    mediaText=`${e.stdout??''}\n${e.stderr??''}\n${e.text??''}`;
     const quota=!e.cancelled?parseQuota(`${e.stderr??''}\n${e.text??''}\n${e.message??''}`):null;   // v0.9.3 한도 소진 알아보기
     const resetAt=quota?.resetMs?new Date(Date.now()+quota.resetMs).toISOString():null;
     if(resetAt){setCooldown(ctx,adapter.id,resetAt);emit(ctx,'state',await statePayload(ctx));}
     store.update(reply.id,{status:e.cancelled?'cancelled':'error',error:quota?'quota_exhausted':e.message,cliError:quota?e.message:undefined,resetAt,stderrTail,exitCode:e.exitCode??null,signal:e.signal??null,timedOut:!!e.timedOut,parseFailed:!!e.parseFailed,elapsedMs:e.elapsedMs??null,evidence:e.evidence??null,evidencePreserved:!!e.evidence&&!evidenceFailed,envBlockedNames:e.envBlockedNames??null,...(evidenceFailed&&typeof e.text==='string'?{text:e.text,hash:sha256(e.text),unstoredAnswer:true}:{})});
   }
   finally{ctx.running.delete(ac);if(slot)releaseSlot(ctx);}
+  if(runStart)await attachMedia(ctx,adapter,reply.id,runStart,mediaText);   // v0.10.2
   await persistThenEmit(ctx,reply.id);   // 검수 V13: 디스크에 남은 뒤에만 완료를 알린다
   emit(ctx,'budget',budgetFor(ctx));
   janitor.maybe();   // v0.9.0: 실행이 끝날 때마다 사용률을 보고, 높으면 바로 정리 (기다리지 않음)
@@ -401,7 +425,7 @@ async function orchestrate(ctx,{text,files,leadId,workerIds}){
     // ② 분배 (병렬, 사용자 동시 실행 상한 안에서). 각 작업 프롬프트에는 메모리를 다시 넣지 않되 첨부 파일 목록은 넣는다 (Gemini FAIL1-4).
     const fileNote=files.length?`\n\n[첨부 파일 — 현재 작업 폴더의 shared/ 안에 있습니다. 직접 읽어서 참고하세요]\n`+files.map(f=>`- shared/${f}`).join('\n'):'';
     // v0.8.7: 팀원 작업 프롬프트에도 행동 규칙(삭제·과금 금지 → [승인 요청])과 작업 환경을 붙인다 — 실행·테스트가 가능하니 "못 해봤다"로 끝내지 말고 실제로 돌려 보게.
-    const envNote=`\n\n[작업 환경] 현재 작업 폴더에서 파일 읽기·쓰기와 명령 실행이 가능합니다. 설치된 도구: python3(= python, 3.11)·pip3·pytest·Node 22·npm·git·make·jq. 환경에 대한 과거 대화 내용("Python 이 없다" 등)은 믿지 말고 \`python3 --version\` 처럼 직접 확인하세요. 코드를 바꿨으면 실제로 실행·테스트해 결과를 보고하세요.`;
+    const envNote=`\n\n[작업 환경] 현재 작업 폴더에서 파일 읽기·쓰기와 명령 실행이 가능합니다. 설치된 도구: python3(= python, 3.11)·pip3·pytest·Node 22·npm·git·make·jq. 환경에 대한 과거 대화 내용("Python 이 없다" 등)은 믿지 말고 \`python3 --version\` 처럼 직접 확인하세요. 코드를 바꿨으면 실제로 실행·테스트해 결과를 보고하세요.\n\n${MEDIA_NOTE}`;
     const results=await Promise.all(parsed.tasks.map(async(t,i)=>{
       const w=workers.find(x=>x.id===t.worker);
       const r=await runOne(ctx,w,{prompt:`### HUB:TASK ${i+1}/${parsed.tasks.length} — ${t.title}\n${t.prompt}${envNote}${fileNote}\n\n${RULES_NOTE.trimEnd()}`,replyTo:plan.id,kind:'task',extra:{taskTitle:t.title,taskIndex:i+1},useSession:false});
@@ -485,11 +509,19 @@ const server=http.createServer(async(req,res)=>{
     }
     if(req.method==='GET'&&url.pathname.startsWith('/files/')){
       const name=safeName(decodeURIComponent(url.pathname.slice(7)));const p=path.join(ctx.shared,name);
-      try{const st=await stat(p);if(!st.isFile())return json(res,{error:'not_found'},404);}catch{return json(res,{error:'not_found'},404);}
+      let st;try{st=await stat(p);if(!st.isFile())return json(res,{error:'not_found'},404);}catch{return json(res,{error:'not_found'},404);}
       const ext=path.extname(name).toLowerCase();
-      const headers={'Content-Type':MIME[ext]??'application/octet-stream','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'",'Cache-Control':'no-store'};
+      const headers={'Content-Type':MIME[ext]??'application/octet-stream','X-Content-Type-Options':'nosniff','Content-Security-Policy':"sandbox; default-src 'none'",'Cache-Control':'private, max-age=3600','Accept-Ranges':'bytes'};
       if(DOWNLOAD_ONLY.has(ext))headers['Content-Disposition']=`attachment; filename*=UTF-8''${encodeURIComponent(name)}`;
-      res.writeHead(200,headers);
+      // v0.10.2 영상 재생(특히 사파리)은 Range 요청을 쓴다: bytes=a-b 한 구간만 지원
+      const rm=/^bytes=(\d*)-(\d*)$/.exec(String(req.headers.range??''));
+      if(rm&&(rm[1]||rm[2])){
+        let start=rm[1]===''?Math.max(0,st.size-Number(rm[2])):Number(rm[1]);let end=rm[1]===''||rm[2]===''?st.size-1:Math.min(Number(rm[2]),st.size-1);
+        if(!(start<=end&&start<st.size)){res.writeHead(416,{'Content-Range':`bytes */${st.size}`});return res.end();}
+        res.writeHead(206,{...headers,'Content-Range':`bytes ${start}-${end}/${st.size}`,'Content-Length':String(end-start+1)});
+        const stream=createReadStream(p,{start,end});stream.on('error',()=>res.destroy());return stream.pipe(res);
+      }
+      res.writeHead(200,{...headers,'Content-Length':String(st.size)});
       const stream=createReadStream(p);stream.on('error',()=>res.destroy());return stream.pipe(res);
     }
     // ---- 설정 (1인용): 월 토큰 상한 · 팀장 AI · 비밀번호 변경 ----
@@ -550,7 +582,7 @@ const server=http.createServer(async(req,res)=>{
         const name=safeName(url.searchParams.get('name'));
         if(Number(req.headers['content-length']??0)>LIMITS.uploadBytes)return json(res,{error:'file_too_large',max:LIMITS.uploadBytes},413);
         let bytes;try{bytes=await bodyBytes(req,LIMITS.uploadBytes);}catch(e){if(e.message==='body_too_large')return json(res,{error:'file_too_large',max:LIMITS.uploadBytes},413);throw e;}
-        await writeFile(path.join(ctx.shared,name),bytes,{mode:0o600});emit(ctx,'files',await listFiles(ctx));return json(res,{ok:true,name,bytes:bytes.length});
+        await writeFile(path.join(ctx.shared,name),bytes,{mode:0o600});(ctx.claimedMedia??(ctx.claimedMedia=new Set())).add(await realpath(path.join(ctx.shared,name)));emit(ctx,'files',await listFiles(ctx));return json(res,{ok:true,name,bytes:bytes.length});   // v0.10.2: 사용자가 올린 파일은 AI 결과로 붙이지 않는다
       }
       // ---- v0.10 푸시 알림 · 화면 보고 있음 신호 ----
       if(url.pathname==='/api/presence'){const a=await bodyJson(req);ctx.visibleUntil=a?.visible?Date.now()+PRESENCE_MS:0;return json(res,{ok:true});}

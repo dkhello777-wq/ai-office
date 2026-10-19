@@ -165,3 +165,9 @@ dialog.sheet::backdrop{background:rgba(20,20,20,.35)}
 /* v0.10 알림 시트 */
 .switch.row-line{display:flex;padding:12px 4px;border-bottom:1px solid var(--line)}
 #push-body ol{padding-left:20px;line-height:1.8}
+
+/* v0.10.2 AI 가 만든 이미지·영상 */
+.media{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.media a{display:block;line-height:0}
+.media img{max-width:min(100%,320px);max-height:320px;border-radius:14px;border:1px solid var(--line);object-fit:cover;background:var(--soft)}
+.media video{width:min(100%,420px);max-height:420px;border-radius:14px;background:#000}

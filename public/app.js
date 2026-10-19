@@ -87,10 +87,12 @@ function aiHtml(m){
   const ev=m.evidence?`<details><summary>실행 증거</summary><pre>${esc(`종료 코드 ${m.exitCode??'-'}${m.signal?' / 시그널 '+m.signal:''}${m.timedOut?' / 시간 초과':''}\nstdout ${m.evidence.stdoutBytes}B · stderr ${m.evidence.stderrBytes}B\n${m.evidence.dir}`)}</pre></details>`:'';
   const auth=m.status==='blocked'&&m.authCheck?`<details><summary>인증 확인</summary><pre>${esc(`${m.authCheck.state} (${m.authCheck.reason})${m.authCheck.subscriptionType?' / 구독 '+m.authCheck.subscriptionType:''}`)}</pre></details>`:'';
   const others=state.adapters.filter(x=>x.id!==m.adapter&&connected(x));
+  // v0.10.2 AI 가 만든 이미지·영상: 답변 아래에 바로. 누르면 원본(새 탭)
+  const media=(m.media??[]).length?`<div class="media">${m.media.map(f=>{const u='/files/'+encodeURIComponent(f.name);return f.kind==='video'?`<video src="${u}" controls playsinline preload="metadata"></video>`:`<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="${esc(f.name)}" loading="lazy"></a>`;}).join('')}</div>`:'';
   const acts=m.status==='done'&&m.kind!=='plan'?`<div class="acts">${others.map(x=>`<button data-handoff="${m.id}" data-to="${x.id}">→ ${esc(x.label)} 검토</button>`).join('')}<button data-memo="${m.id}">🧠 기억</button><button data-save="${m.id}">💾 저장</button><button data-copy="${m.id}">복사</button></div>`:'';
   const meta=`<span class="meta">${m.status==='done'&&m.elapsedMs?`<span>${(m.elapsedMs/1000).toFixed(1)}초</span>`:''}<span>${timeOf(m.at)}</span>${m.usage?`<span>${esc(usageShort(m.usage))}</span>`:''}</span>`;
   // v0.9.2 하얀 도트: 아바타·이름·시간을 한 줄 머리로, 본문은 말풍선 없이 그 아래
-  return `<div class="m ai" id="m${m.id}" style="--ai-color:${esc(a.color)}"><div class="ai-head">${avHtml(a)}<span class="name">${esc(a.label)}</span>${meta}</div><div class="body"><div class="bubble ${cls}">${kind}${m.kind==='plan'&&m.status==='done'?plan+body:body+plan}${auth||ev}</div>${acts}</div></div>`;
+  return `<div class="m ai" id="m${m.id}" style="--ai-color:${esc(a.color)}"><div class="ai-head">${avHtml(a)}<span class="name">${esc(a.label)}</span>${meta}</div><div class="body"><div class="bubble ${cls}">${kind}${m.kind==='plan'&&m.status==='done'?plan+body:body+plan}${auth||ev}</div>${media}${acts}</div></div>`;
 }
 function usageShort(u){const i=u.input??u.input_tokens??u.prompt_tokens,o=u.output??u.output_tokens??u.completion_tokens;return Number.isFinite(i)&&Number.isFinite(o)?`${i}+${o} 토큰`:'';}
 function renderTimeline(){
