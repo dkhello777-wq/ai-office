@@ -2,7 +2,9 @@
 // 새 AI 추가: config/adapters.json 에 항목 추가 + 필요하면 PARSERS 에 파서 하나 추가.
 import {spawn} from 'node:child_process';
 import {readFile,writeFile,mkdir,chmod,stat} from 'node:fs/promises';
-import {createHash} from 'node:crypto';
+import {createHash,randomBytes} from 'node:crypto';
+import {writeFileSync,unlinkSync} from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 export const ROOT=new URL('../../',import.meta.url).pathname.replace(/\/$/,'');
@@ -60,6 +62,16 @@ export const PARSERS={
     const u=result.usage&&typeof result.usage==='object'?result.usage:null;
     const usage=u?{input:(Number(u.input_tokens)||0)+(Number(u.cache_read_tokens)||0),output:(Number(u.output_tokens)||0)+(Number(u.thinking_tokens)||0),raw:u}:null;
     return {text:typeof result.response==='string'?result.response:'',session:result.conversation_id||null,usage,raw:result};
+  },
+  // v0.10 Grok Build CLI `--output-format json`: 끝난 뒤 객체 하나 {text, stopReason, sessionId, usage{input_tokens(캐시 제외), cache_read_input_tokens, output_tokens, reasoning_tokens}}. 실패면 {"type":"error","message"} + exit≠0.
+  'grok-json'(stdout){
+    let d=null;
+    for(const line of stdout.split('\n').reverse()){const t=line.trim();if(!t.startsWith('{'))continue;try{d=JSON.parse(t);break;}catch{}}
+    if(!d){try{d=JSON.parse(stdout);}catch{throw new Error('grok_result_missing');}}
+    if(d.type==='error')throw new Error('grok_error');
+    const u=d.usage&&typeof d.usage==='object'?d.usage:null;
+    const usage=u?{input:(Number(u.input_tokens)||0)+(Number(u.cache_read_input_tokens)||0)+(Number(u.cache_creation_input_tokens)||0),output:(Number(u.output_tokens)||0)+(Number(u.reasoning_tokens)||0),raw:u}:null;
+    return {text:typeof d.text==='string'?d.text:'',session:d.sessionId??d.session_id??null,usage,raw:d};
   },
   'mock-json'(stdout){const d=JSON.parse(stdout);return {text:d.text,session:d.session,usage:d.usage??null,raw:d};},
   'plain'(stdout){return {text:stdout.trim(),session:null,usage:null,raw:null};}
@@ -176,9 +188,9 @@ export async function writeEvidence(dir,{stdoutBytes,stderrBytes,meta,privateMet
 // evidenceDir 를 주면 stdout/stderr 원문 전체와 종료 정보를 그 폴더에 보존한다.
 // 세션 재개: resumeMode 'append'(기본) 는 args 뒤에 resumeArgs 를 붙이고, 'replace' 는 resumeArgs 가 명령 전체를 대신한다
 // (GPT R03: codex 는 `exec resume <ID>` 서브커맨드라 append 로는 만들 수 없음).
-export function buildArgs(adapter,{prompt,session}){
+export function buildArgs(adapter,{prompt,session,promptFile=''}){
   const viaStdin=(adapter.promptVia??'stdin')==='stdin';
-  const vars={prompt:viaStdin?'':prompt,session,root:ROOT};
+  const vars={prompt:viaStdin||adapter.promptVia==='file'?'':prompt,session,root:ROOT,promptFile};
   const resume=session&&adapter.resumeArgs?.length;
   const args=resume&&adapter.resumeMode==='replace'?fill(adapter.resumeArgs,vars):[...fill(adapter.args,vars),...(resume?fill(adapter.resumeArgs,vars):[])];
   return args.filter(a=>!(viaStdin&&a===''));
@@ -186,13 +198,20 @@ export function buildArgs(adapter,{prompt,session}){
 export function runAdapter(adapter,{prompt,cwd,session=null,timeoutMs=900000,onChunk=()=>{},evidenceDir=null,parentEnv=process.env,extraEnv={},signal=null}){
   return new Promise((resolve,reject)=>{
     const viaStdin=(adapter.promptVia??'stdin')==='stdin';
-    const args=buildArgs(adapter,{prompt,session});
+    // v0.10 promptVia 'file': 프롬프트를 사용자 임시 폴더의 0600 파일로 넘긴다({promptFile}). Node 의 stdio 'pipe' 는 소켓이라 /dev/stdin 을 못 여는 CLI(grok --prompt-file)용. 끝나면 지운다.
+    let promptFile='';
+    if(adapter.promptVia==='file'){
+      const dir=extraEnv.TMPDIR||os.tmpdir();promptFile=path.join(dir,`prompt-${adapter.id}-${process.pid}-${randomBytes(6).toString('hex')}.txt`);
+      try{writeFileSync(promptFile,prompt,{mode:0o600,flag:'wx'});}catch(e){return reject(Object.assign(new Error('prompt_file_failed'),{cause:e}));}
+    }
+    const dropPrompt=()=>{if(promptFile){try{unlinkSync(promptFile);}catch{}promptFile='';}};
+    const args=buildArgs(adapter,{prompt,session,promptFile});
     const {env,blockedNames}=buildChildEnv(parentEnv,adapter,extraEnv);
     const startedAt=Date.now();
     if(signal?.aborted)return reject(Object.assign(new Error('cancelled'),{cancelled:true,envBlockedNames:blockedNames}));
     let child;
     try{child=spawnChild(adapter.command,args,{cwd,env,stdio:[viaStdin?'pipe':'ignore','pipe','pipe']});}
-    catch(e){return reject(Object.assign(new Error('spawn_failed'),{cause:e}));}
+    catch(e){dropPrompt();return reject(Object.assign(new Error('spawn_failed'),{cause:e}));}
     if(viaStdin){child.stdin.on('error',()=>{});child.stdin.end((STDIN_WRAPS[adapter.stdinFormat??'text']??STDIN_WRAPS.text)(prompt));}
     const out=collector(),err=collector();let timedOut=false,cancelled=false;
     const timer=setTimeout(()=>{timedOut=true;terminateChild(child);},timeoutMs);
@@ -204,7 +223,7 @@ export function runAdapter(adapter,{prompt,cwd,session=null,timeoutMs=900000,onC
     child.stdout.on('data',d=>out.push(d,s=>{seen+=s;let partial=null;if(streamParser){try{partial=streamParser(seen);}catch{partial=null;}}onChunk(s,{partial,bytes:Buffer.byteLength(seen),elapsedMs:Date.now()-startedAt});}));
     child.stderr.on('data',d=>err.push(d));
     const finish=async(code,sig)=>{
-      clearTimeout(timer);signal?.removeEventListener('abort',onAbort);
+      clearTimeout(timer);signal?.removeEventListener('abort',onAbort);dropPrompt();
       const elapsedMs=Date.now()-startedAt;const signal_=sig;
       const o=out.finish(),e=err.finish();
       let parsed=null,parseError=null;   // parseError(원본 예외 문자열)는 로컬 meta.json 에만 기록한다 (R4)
@@ -224,7 +243,7 @@ export function runAdapter(adapter,{prompt,cwd,session=null,timeoutMs=900000,onC
       if(!String(parsed?.text??'').trim())return reject(Object.assign(new Error('empty_result'),{...base,...(parsed??{})}));
       resolve({...parsed,...base});
     };
-    child.on('error',x=>{clearTimeout(timer);reject(Object.assign(new Error(x.code==='ENOENT'?'cli_not_found':'spawn_failed'),{cause:x,stderr:err.finish().text,envBlockedNames:blockedNames}));});
+    child.on('error',x=>{clearTimeout(timer);dropPrompt();reject(Object.assign(new Error(x.code==='ENOENT'?'cli_not_found':'spawn_failed'),{cause:x,stderr:err.finish().text,envBlockedNames:blockedNames}));});
     child.on('close',(code,signal)=>{finish(code,signal).catch(reject);});
   });
 }
@@ -280,13 +299,22 @@ export const AUTH_PARSERS={
     if(d.loggedIn!==true)return {state:'unverified',reason:'logged_in_missing',authMethod:mode};
     return {state:'subscription',reason:'google_account_antigravity',authMethod:'account',apiProvider:'google',subscriptionType:typeof d.tier==='string'?d.tier:'google-account'};
   },
+  // v0.10 Grok: src/adapters/grok-auth-status.mjs 의 {loggedIn, mode}. 'account'(grok.com 세션)만 허용, 'api-key' 차단.
+  'grok-json'(stdout){
+    let d;try{d=JSON.parse(stdout);}catch{return {state:'unverified',reason:'malformed_json'};}
+    if(!d||typeof d!=='object'||Array.isArray(d))return {state:'unverified',reason:'unexpected_shape'};
+    if(d.mode==='api-key')return {state:'api_key',reason:typeof d.reason==='string'?d.reason:'api_key',authMethod:'api-key'};
+    if(d.loggedIn===false)return {state:'not_logged_in',reason:typeof d.reason==='string'?d.reason.slice(0,120):'logged_in_false'};
+    if(d.loggedIn!==true)return {state:'unverified',reason:'logged_in_missing'};
+    return {state:'subscription',reason:'grok_com_session',authMethod:'account',apiProvider:'xai',subscriptionType:'x-subscription'};
+  },
   // 테스트용 모의 CLI: Claude 와 같은 JSON 형식
   'mock-json'(stdout){return AUTH_PARSERS['claude-json'](stdout);}
 };
 // 어떤 스트림을 판정에 쓰는지는 파서별로 정한다 (GPT R01: codex 0.158 의 `login status` 는 "Logged in using ChatGPT" 를 stderr 로 낸다).
 // JSON 파서(claude)는 stdout 만 — stderr 경고가 섞이면 JSON 이 깨지므로 합치지 않는다. 텍스트 행 파서(codex)는 stdout 다음 stderr 를 이어 붙여 본다.
 // 어댑터 authCheck.output 으로 덮어쓸 수 있다: 'stdout' | 'stderr' | 'both'.
-export const AUTH_PARSER_STREAMS={'claude-json':'stdout','codex-text':'both','agy-json':'stdout','mock-json':'stdout'};
+export const AUTH_PARSER_STREAMS={'claude-json':'stdout','codex-text':'both','agy-json':'stdout','grok-json':'stdout','mock-json':'stdout'};
 export function checkAuth(adapter,parentEnv=process.env,extraEnv={},signal=null,cwd=undefined){   // cwd: 실행과 같은 작업 폴더를 주면 프로젝트 설정(.claude/settings.json 등)까지 같은 조건으로 판정 (검수 V09)
   const check=adapter.authCheck;
   if(!check||!Array.isArray(check.args)||!AUTH_PARSERS[check.parser])return Promise.resolve({id:adapter.id,state:'unverified',reason:'no_auth_check_configured'});

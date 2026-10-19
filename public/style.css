@@ -139,6 +139,9 @@ dialog.sheet::backdrop{background:rgba(20,20,20,.35)}
 .gd-up{flex:none}
 
 /* ---- 참여자 카드 ---- */
+.pextra{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-top:8px}
+.switch{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--ink2);cursor:pointer}
+.switch input{width:18px;height:18px;accent-color:var(--ink);margin:0}
 .person{display:flex;gap:14px;padding:14px 4px;border-bottom:1px solid var(--line);align-items:flex-start}
 .person .av{width:48px;height:48px;font-size:17px}
 .person .info{flex:1;min-width:0}
@@ -158,3 +161,7 @@ dialog.sheet::backdrop{background:rgba(20,20,20,.35)}
   #app{border-left:1px solid var(--line);border-right:1px solid var(--line)}
   .m.me{max-width:70%}
 }
+
+/* v0.10 알림 시트 */
+.switch.row-line{display:flex;padding:12px 4px;border-bottom:1px solid var(--line)}
+#push-body ol{padding-left:20px;line-height:1.8}

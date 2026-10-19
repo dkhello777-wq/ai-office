@@ -16,7 +16,7 @@ export function normalizeUsage(u){
 }
 
 export class Store{
-  constructor(path){this.path=path;this.state={messages:[],sessions:{},nextId:1,usage:{},epochs:{},seq:0};}
+  constructor(path){this.path=path;this.state={messages:[],sessions:{},nextId:1,usage:{},epochs:{},seq:0,cooldowns:{}};}
   // 검수 V19: 메시지마다 단조 증가 seq. 화면은 seq 가 큰 쪽만 받아들여 늦게 온 옛 스냅샷이 최신 상태를 되돌리지 못한다.
   bump(m){m.seq=++this.state.seq;return m;}
   // 파일 없음(ENOENT)만 "새 상태". 읽기 실패·JSON 손상은 던져서 빈 상태로 덮어쓰지 않는다 (GPT R05).
@@ -38,7 +38,7 @@ export class Store{
     if(d.epochs)for(const v of Object.values(d.epochs))if(!isNat(v))throw bad('epochs');
     if(d.sessions)for(const v of Object.values(d.sessions))if(!(typeof v==='string'||v===null))throw bad('sessions');
     if(d.seq!==undefined&&!isNat(d.seq))throw bad('seq');
-    this.state=d;if(!this.state.usage)this.state.usage={};if(!this.state.epochs)this.state.epochs={};if(!this.state.sessions)this.state.sessions={};if(!Number.isSafeInteger(this.state.seq))this.state.seq=Math.max(0,...this.state.messages.map(m=>Number.isSafeInteger(m.seq)?m.seq:0));
+    this.state=d;if(!this.state.usage)this.state.usage={};if(!this.state.epochs)this.state.epochs={};if(!this.state.sessions)this.state.sessions={};if(!this.state.cooldowns||typeof this.state.cooldowns!=='object'||Array.isArray(this.state.cooldowns))this.state.cooldowns={};if(!Number.isSafeInteger(this.state.seq))this.state.seq=Math.max(0,...this.state.messages.map(m=>Number.isSafeInteger(m.seq)?m.seq:0));
   }
   // 저장은 항상 직렬화: 동시에 두 AI가 끝나도 tmp→rename 이 겹치지 않는다. 한 번 실패해도 다음 저장은 이어간다 (검수 FAIL 8). 파일은 0600 (검수 FAIL 9).
   save(){

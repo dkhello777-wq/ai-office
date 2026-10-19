@@ -15,9 +15,13 @@ const label=id=>ad(id)?.label??id;
 const color=id=>ad(id)?.color??'#888';
 const initial=a=>(a.label??a.id??'?').replace(/\s*\(.*\)/,'').trim()[0]?.toUpperCase()??'?';
 // v0.9.2 캐릭터 아바타: config 의 avatar 이미지가 있으면 그림, 못 불러오면 첫 글자로 (이미지가 사라지면 아래 글자가 보인다)
+// v0.9.3 '모두에게'에 들어갈 AI: 연결됨 + 빼기(quiet) 아님 + 한도 쉬는 중 아님. @이름 으로 부르면 quiet 여도 답한다.
+const cooling=a=>!!(a.cooldownUntil&&Date.parse(a.cooldownUntil)>Date.now());
+const inAll=a=>connected(a)&&!a.quiet&&!cooling(a);
+const whenKo=iso=>new Date(iso).toLocaleString('ko-KR',{month:'numeric',day:'numeric',weekday:'short',hour:'numeric',minute:'2-digit'});
 const avHtml=(a,cls='')=>`<span class="av ${cls}" style="--ai-color:${esc(a.color??'#888')}" title="${esc(a.label??a.id)}">${esc(initial(a))}${a.avatar?`<img src="/${esc(a.avatar)}" alt="" onerror="this.remove()">`:''}</span>`;
 const connected=a=>a.auth?.state==='subscription';
-const ERR={gdrive_not_configured:'서버에 구글 드라이브 설정이 없습니다',gdrive_not_connected:'구글 드라이브가 연결되지 않았습니다',gdrive_reconnect_required:'구글 드라이브 권한이 만료됐습니다 — 다시 연결하세요',gdrive_access_denied:'구글에서 허용하지 않았습니다',gdrive_code_expired:'코드 시간이 지났습니다 — 다시 연결하세요',gdrive_scope_denied:'드라이브 권한을 허용하지 않았습니다',gdrive_device_failed:'구글 연결을 시작하지 못했습니다 (클라이언트 설정 확인)',gdrive_token_failed:'구글 인증에 실패했습니다',gdrive_folder_failed:'드라이브 폴더를 만들지 못했습니다',gdrive_upload_failed:'드라이브 업로드에 실패했습니다',gdrive_file_too_large:'200MB 넘는 파일은 올릴 수 없습니다',file_not_found:'파일이 없습니다',setup_code_invalid:'설정 코드가 맞지 않습니다 — 서버 로그(또는 data/setup-code)의 코드를 넣으세요',persist_failed:'답은 받았지만 저장에 실패했습니다 (서버 디스크 확인)',interrupted:'서버가 재시작되어 중단됨',body_too_large:'요청이 너무 큽니다',login_required:'로그인이 필요합니다',login_invalid:'비밀번호가 맞지 않습니다',too_many_attempts:'실패가 많아 15분간 잠겼습니다',password_too_short:'비밀번호는 10자 이상',already_set:'이미 비밀번호가 있습니다',login_already_running:'이미 연결 진행 중',login_not_configured:'이 AI 는 화면 연결 명령이 아직 없습니다',budget_exceeded:'이번 달 토큰 상한에 도달 — 메뉴 > 토큰 예산에서 조정',workers_required:'팀원이 될 AI 가 더 연결돼야 합니다',lead_required:'팀장 AI 를 먼저 지정하세요',plan_parse_failed:'팀장이 계획을 JSON 으로 내지 않아 분배를 멈췄습니다',budget_invalid:'상한은 0 이상의 숫자',cancelled:'취소됨',text_too_long:'글자 수 상한 초과',file_too_large:'파일 크기 상한 초과',state_corrupt:'대화 저장 파일이 손상됨',state_unreadable:'대화 저장 파일을 읽을 수 없음',not_logged_in:'아직 연결되지 않음 — 참여자에서 연결하세요',api_key_auth_detected:'API 키 모드라 차단됨 (구독 로그인만 허용)',third_party_auth_detected:'서드파티 인증이라 차단됨',auth_unverified:'인증 상태를 확인할 수 없어 차단됨',cli_not_found:'CLI 가 서버에 설치돼 있지 않음',cli_timeout:'시간 초과',all_tasks_failed:'팀원 작업이 전부 실패해 종합을 건너뜀',stopped:'긴급 중지로 멈춤 — 다음 단계로 가지 않음',empty_result:'답변이 비어 있어 실패로 처리',sandbox_failed:'Codex 샌드박스가 컨테이너에서 못 떠 명령이 실행되지 않음'};
+const ERR={push_subscription_invalid:'이 브라우저의 알림 구독을 받을 수 없어요',quota_exhausted:'사용 한도가 찼습니다',quota_cooldown:'사용 한도 소진으로 쉬는 중',quiet_invalid:'잘못된 설정',gdrive_not_configured:'서버에 구글 드라이브 설정이 없습니다',gdrive_not_connected:'구글 드라이브가 연결되지 않았습니다',gdrive_reconnect_required:'구글 드라이브 권한이 만료됐습니다 — 다시 연결하세요',gdrive_access_denied:'구글에서 허용하지 않았습니다',gdrive_code_expired:'코드 시간이 지났습니다 — 다시 연결하세요',gdrive_scope_denied:'드라이브 권한을 허용하지 않았습니다',gdrive_device_failed:'구글 연결을 시작하지 못했습니다 (클라이언트 설정 확인)',gdrive_token_failed:'구글 인증에 실패했습니다',gdrive_folder_failed:'드라이브 폴더를 만들지 못했습니다',gdrive_upload_failed:'드라이브 업로드에 실패했습니다',gdrive_file_too_large:'200MB 넘는 파일은 올릴 수 없습니다',file_not_found:'파일이 없습니다',setup_code_invalid:'설정 코드가 맞지 않습니다 — 서버 로그(또는 data/setup-code)의 코드를 넣으세요',persist_failed:'답은 받았지만 저장에 실패했습니다 (서버 디스크 확인)',interrupted:'서버가 재시작되어 중단됨',body_too_large:'요청이 너무 큽니다',login_required:'로그인이 필요합니다',login_invalid:'비밀번호가 맞지 않습니다',too_many_attempts:'실패가 많아 15분간 잠겼습니다',password_too_short:'비밀번호는 10자 이상',already_set:'이미 비밀번호가 있습니다',login_already_running:'이미 연결 진행 중',login_not_configured:'이 AI 는 화면 연결 명령이 아직 없습니다',budget_exceeded:'이번 달 토큰 상한에 도달 — 메뉴 > 토큰 예산에서 조정',workers_required:'팀원이 될 AI 가 더 연결돼야 합니다',lead_required:'팀장 AI 를 먼저 지정하세요',plan_parse_failed:'팀장이 계획을 JSON 으로 내지 않아 분배를 멈췄습니다',budget_invalid:'상한은 0 이상의 숫자',cancelled:'취소됨',text_too_long:'글자 수 상한 초과',file_too_large:'파일 크기 상한 초과',state_corrupt:'대화 저장 파일이 손상됨',state_unreadable:'대화 저장 파일을 읽을 수 없음',not_logged_in:'아직 연결되지 않음 — 참여자에서 연결하세요',api_key_auth_detected:'API 키 모드라 차단됨 (구독 로그인만 허용)',third_party_auth_detected:'서드파티 인증이라 차단됨',auth_unverified:'인증 상태를 확인할 수 없어 차단됨',cli_not_found:'CLI 가 서버에 설치돼 있지 않음',cli_timeout:'시간 초과',all_tasks_failed:'팀원 작업이 전부 실패해 종합을 건너뜀',stopped:'긴급 중지로 멈춤 — 다음 단계로 가지 않음',empty_result:'답변이 비어 있어 실패로 처리',sandbox_failed:'Codex 샌드박스가 컨테이너에서 못 떠 명령이 실행되지 않음'};
 const msg=e=>ERR[e]??e;
 const AUTH_KO={subscription:'연결됨',api_key:'API 키 모드 — 차단',third_party:'서드파티 — 차단',not_logged_in:'연결 필요',unverified:'확인 안 됨'};
 
@@ -75,9 +79,9 @@ function aiHtml(m){
   let body='',cls=m.status;
   if(m.status==='running')body=p?.partial?`<span class="partial">${esc(p.partial)}</span><div class="progress">수신 중 … ${(p.bytes/1024).toFixed(1)}KB · ${(p.elapsedMs/1000).toFixed(0)}s</div>`:`<span class="dots">${m.kind==='plan'?'계획 세우는 중':m.kind==='final'?'종합하는 중':'생각 중'}</span>`;
   else if(m.status==='done')body=(m.approvalRequested?`<div class="approval">✋ 승인 요청 — 이 AI 가 삭제나 과금이 필요한 일 앞에서 멈췄습니다. 내용을 읽고 허락하려면 답장으로 "진행해" 라고 보내세요.</div>`:'')+(m.kind==='plan'?`<details class="raw"><summary>계획 원문(JSON)</summary><pre>${esc(m.text)}</pre></details>`:clip(m.id,m.text,esc(m.text)));   // 팀장의 계획 JSON 은 접어 둔다 — 화면에는 분배 요약만, 답은 ③ 종합 말풍선에. v0.8.7: [승인 요청] 답변은 띠로 강조
-  else if(m.status==='blocked')body=`🚫 ${esc(msg(m.error))}`;
+  else if(m.status==='blocked')body=`🚫 ${esc(msg(m.error))}${m.resetAt?` · ${esc(whenKo(m.resetAt))} 초기화`:''}`;
   else if(m.status==='cancelled')body='⏹ 중지됨 — 긴급 중지로 끊김'+(m.text?'\n\n'+esc(m.text):'');
-  else body=`⚠️ 오류: ${esc(msg(m.error))}${m.text?'\n\n'+esc(m.text):''}${m.stderrTail?`<details open><summary>CLI 오류 출력</summary><pre>${esc(m.stderrTail)}</pre></details>`:''}`;
+  else body=`⚠️ 오류: ${esc(msg(m.error))}${m.resetAt?` · ${esc(whenKo(m.resetAt))} 초기화까지 쉬어요`:''}${m.text?'\n\n'+esc(m.text):''}${m.stderrTail?`<details open><summary>CLI 오류 출력</summary><pre>${esc(m.stderrTail)}</pre></details>`:''}`;
   const kind=m.kind&&KIND[m.kind]?`<span class="kind ${m.kind}">${KIND[m.kind]}${m.taskTitle?' · '+esc(m.taskTitle):''}</span><br>`:'';
   const plan=m.kind==='plan'&&m.plan?`<div class="plan">분배: ${m.plan.tasks.length?m.plan.tasks.map(t=>`${esc(label(t.worker))} — ${esc(t.title||'(제목 없음)')}`).join(' · '):'팀원 없이 직접 답함'}${m.plan.dropped?` · 버린 작업 ${m.plan.dropped}개`:''}${m.plan.note?'<br>'+esc(m.plan.note):''}${m.orchestrateError?'<br>'+esc(msg(m.orchestrateError)):''}</div>`:'';
   const ev=m.evidence?`<details><summary>실행 증거</summary><pre>${esc(`종료 코드 ${m.exitCode??'-'}${m.signal?' / 시그널 '+m.signal:''}${m.timedOut?' / 시간 초과':''}\nstdout ${m.evidence.stdoutBytes}B · stderr ${m.evidence.stderrBytes}B\n${m.evidence.dir}`)}</pre></details>`:'';
@@ -127,8 +131,8 @@ function scrollBottom(){const c=$('#chat');c.scrollTop=c.scrollHeight;}
 
 // ---- 헤더 · 참여자 ----
 function renderHeader(){
-  const on=state.adapters.filter(connected);
-  $('#room-count').textContent=on.length+1;
+  const on=state.adapters.filter(inAll);
+  $('#room-count').textContent=state.adapters.filter(connected).length+1;
   $('#people-open').innerHTML=state.adapters.map(a=>avHtml(a,connected(a)?'':'off')).join('')||'<span class="hint">참여자 없음</span>';
   const lead=ad(state.lead);
   $('#route-lead').textContent=lead?`팀장 ${lead.label}에게`:'팀장에게';
@@ -151,11 +155,14 @@ function renderPeople(){
     const st=a.auth?.state;const isLead=state.lead===a.id;
     const status=!a.auth?`<span class="pstatus off">○ 확인 중<span class="dots"></span></span>`:st==='subscription'?`<span class="pstatus ok">● ${AUTH_KO[st]}${a.auth.subscriptionType?' · '+esc(a.auth.subscriptionType):''}</span>`:`<span class="pstatus ${st==='not_logged_in'?'off':'bad'}">○ ${AUTH_KO[st]??st}${a.auth.reason?` <small>(${esc(a.auth.reason)})</small>`:''}</span>`;
     const running=a.login?.status==='running';
-    return `<div class="person" data-id="${a.id}" style="--ai-color:${esc(a.color)}">${avHtml(a,connected(a)?'':'off')}<div class="info"><div class="pname">${esc(a.label)}${isLead?'<span class="lead-tag">팀장</span>':''}</div><div class="prole">${esc(a.roleHint||'')}</div>${status}<div class="pacts">${a.canLogin&&!running?`<button class="btn small primary p-login">${connected(a)?'다시 연결':'연결하기'}</button>`:''}${!a.canLogin?`<span class="hint small">이 AI 는 아직 화면 연결을 지원하지 않습니다</span>`:''}${connected(a)?`<button class="btn small p-lead">${isLead?'팀장 해제':'팀장으로'}</button><button class="btn small p-reset" title="이 AI 의 이어가기 세션을 새로 시작">새 대화</button>`:''}</div><div class="login-slot">${loginBoxHtml(a)}</div></div></div>`;
+    const extra=connected(a)?`<div class="pextra">${cooling(a)?`<span class="pstatus warn">⏸ 사용 한도 소진 · ${esc(whenKo(a.cooldownUntil))} 초기화</span><button class="btn small p-cool">지금 풀기</button>`:''}<label class="switch"><input type="checkbox" class="p-quiet" ${a.quiet?'':'checked'}><span>모두에게 포함</span></label>${a.quiet?'<span class="hint small">@이름 으로 부를 때만 답해요</span>':''}</div>`:'';
+    return `<div class="person" data-id="${a.id}" style="--ai-color:${esc(a.color)}">${avHtml(a,connected(a)?'':'off')}<div class="info"><div class="pname">${esc(a.label)}${isLead?'<span class="lead-tag">팀장</span>':''}</div><div class="prole">${esc(a.roleHint||'')}</div>${status}${extra}<div class="pacts">${a.canLogin&&!running?`<button class="btn small primary p-login">${connected(a)?'다시 연결':'연결하기'}</button>`:''}${!a.canLogin?`<span class="hint small">이 AI 는 아직 화면 연결을 지원하지 않습니다</span>`:''}${connected(a)?`<button class="btn small p-lead">${isLead?'팀장 해제':'팀장으로'}</button><button class="btn small p-reset" title="이 AI 의 이어가기 세션을 새로 시작">새 대화</button>`:''}</div><div class="login-slot">${loginBoxHtml(a)}</div></div></div>`;
   }).join('')||'<p class="hint">설정된 AI 가 없습니다 (config/adapters.json)</p>';
   list.querySelectorAll('.person').forEach(p=>{
     const id=p.dataset.id;
     p.querySelector('.p-login')?.addEventListener('click',async()=>{try{await api('/api/cli-login',{method:'POST',body:JSON.stringify({adapterId:id})});}catch(e){toast(msg(e.message));}});
+    p.querySelector('.p-quiet')?.addEventListener('change',async e=>{try{await api('/api/settings/quiet',{method:'POST',body:JSON.stringify({adapterId:id,quiet:!e.target.checked})});}catch(x){toast(msg(x.message));}});
+    p.querySelector('.p-cool')?.addEventListener('click',async()=>{if(!confirm('한도 쉬는 시간을 풀까요? 실제 한도가 남아 있지 않으면 다시 실패합니다.'))return;try{await api('/api/settings/cooldown-clear',{method:'POST',body:JSON.stringify({adapterId:id})});}catch(x){toast(msg(x.message));}});
     p.querySelector('.p-lead')?.addEventListener('click',async()=>{await api('/api/settings/lead',{method:'POST',body:JSON.stringify({adapterId:state.lead===id?null:id})});});
     p.querySelector('.p-reset')?.addEventListener('click',async()=>{await api('/api/reset',{method:'POST',body:JSON.stringify({adapterId:id})});toast(label(id)+' 새 대화 시작');});
     const inp=p.querySelector('.login-input');
@@ -163,6 +170,7 @@ function renderPeople(){
   });
 }
 function renderBadges(){
+  if($('#push-badge'))mySub().then(x=>{$('#push-badge').textContent=x?'켜짐':'';}).catch(()=>{});
   const b=state.budget;if(b){const pct=b.limit?Math.round(b.tokens/b.limit*100):null;$('#budget-badge').textContent=`${b.tokens.toLocaleString()}${b.limit?` / ${b.limit.toLocaleString()} (${pct}%)`:''} · ${b.calls}회`;$('#budget-badge').style.color=b.exceeded?'var(--bad)':pct!==null&&pct>=80?'var(--warn)':'';}
   const m=state.memory;if(m)$('#memory-badge').textContent=m.chars?`${m.chars>=1000?(m.chars/1000).toFixed(1)+'k':m.chars}자${m.overLimit?' ⚠':''}`:'비어 있음';
   $('#files-badge').textContent=state.files.length?state.files.length+'개':'';
@@ -190,7 +198,7 @@ function renderAttach(){const row=$('#attach-row');row.hidden=!attached.size;row
 function renderAll(){renderHeader();renderTimeline();renderPeople();renderFiles();renderBadges();}
 
 // ---- 보내기: 멘션 → 팀장 → 모두 ----
-const ALIAS={claude:['클로드','claude','클'],codex:['코덱스','codex','지피티','챗지피티','gpt','chatgpt','오픈ai','openai'],gemini:['제미나이','제미니','gemini','구글','google'],grok:['그록','grok']};
+const ALIAS={claude:['클로드','claude','클'],codex:['코덱스','codex','지피티','챗지피티','gpt','chatgpt','오픈ai','openai'],gemini:['제미나이','제미니','gemini','구글','google'],grok:['그록','grok','그로크','grk']};
 // 검수 V20: 문장 시작 또는 공백 뒤의 @만 멘션. 별칭 전체 일치 또는 별칭 + 허용된 조사(에게·한테·야·님·아·씨)만. 이메일·패키지명(@scope/x)은 걸리지 않는다.
 const PARTICLES=['에게','한테','야','님','아','씨','에게도','한테도'];
 function parseMentions(text){
@@ -206,7 +214,7 @@ function parseMentions(text){
 }
 async function send(){
   const text=$('#text').value;if(!text.trim())return;
-  const on=state.adapters.filter(connected).map(a=>a.id);
+  const on=state.adapters.filter(inAll).map(a=>a.id);   // v0.9.3: 빼 둔 AI·한도 쉬는 AI 제외
   const mentioned=parseMentions(text);
   let body;
   if(mentioned.length)body={text,targets:mentioned,files:[...attached]};
@@ -215,7 +223,7 @@ async function send(){
     const workers=on.filter(id=>id!==state.lead);
     body=workers.length?{text,mode:'orchestrate',lead:state.lead,workers,files:[...attached]}:{text,targets:[state.lead],files:[...attached]};
   }else{
-    if(!on.length){toast('먼저 참여자를 연결하세요');$('#people').showModal();return;}
+    if(!on.length){toast(state.adapters.some(connected)?'모두에게에 들어간 AI 가 없습니다 — @이름 으로 부르거나 참여자에서 켜세요':'먼저 참여자를 연결하세요');$('#people').showModal();return;}
     body={text,targets:on,files:[...attached]};
   }
   $('#send').disabled=true;
@@ -265,6 +273,43 @@ $('#m-password').onclick=openFromMenu('password');
 $('#password-form').onsubmit=async e=>{e.preventDefault();const f=new FormData(e.target);try{await api('/api/settings/password',{method:'POST',body:JSON.stringify({current:f.get('current'),next:f.get('next')})});e.target.reset();$('#password').close();showGate({});toast('변경됨 — 다시 로그인하세요');}catch(x){$('#password-msg').textContent=msg(x.message);}};
 $('#m-logout').onclick=async()=>{$('#menu').close();try{await api('/api/logout',{method:'POST',body:'{}'});}catch{}es?.close();state={user:null,lead:null,adapters:[],messages:[],files:[],budget:null,memory:null};showGate({});};
 
+// ---- v0.10 푸시 알림: 서비스 워커 등록 · 이 기기 구독 · 화면 보고 있음 신호 ----
+const isIOS=/iP(hone|ad|od)/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
+const standalone=()=>matchMedia('(display-mode: standalone)').matches||navigator.standalone===true;
+const pushOK=()=>'serviceWorker' in navigator&&'PushManager' in window&&'Notification' in window;
+let swReg=null;
+async function swReady(){if(!('serviceWorker' in navigator))return null;try{swReg=swReg??await navigator.serviceWorker.register('/sw.js');return swReg;}catch(e){console.warn('sw',e);return null;}}
+async function mySub(){const r=await swReady();return r?await r.pushManager.getSubscription():null;}
+const u8=b64=>{const s=atob(b64.replace(/-/g,'+').replace(/_/g,'/')+'='.repeat((4-b64.length%4)%4));return Uint8Array.from(s,c=>c.charCodeAt(0));};
+async function renderPush(){
+  const el=$('#push-body');
+  if(!pushOK()){el.innerHTML=isIOS&&!standalone()?`<p>아이폰은 <b>홈 화면에 추가</b>한 앱에서만 알림을 받을 수 있어요.</p><ol class="hint"><li>사파리 아래 공유 버튼 → <b>홈 화면에 추가</b></li><li>홈 화면의 AI 오피스로 열기</li><li>여기서 다시 <b>알림 받기</b></li></ol>`:'<p class="hint">이 브라우저는 알림을 지원하지 않아요. 크롬·사파리 최신판에서 열어 주세요.</p>';return;}
+  const sub=await mySub();let st={};try{st=await api('/api/push'+(sub?'?endpoint='+encodeURIComponent(sub.endpoint):''));}catch{}
+  const on=!!(sub&&st.thisDevice);const denied=Notification.permission==='denied';
+  el.innerHTML=`<div class="gdrive">${on?'<span class="gd-on">● 이 기기에서 알림 받는 중</span><button class="btn small" id="push-test">테스트 보내기</button><button class="btn small" id="push-off">끄기</button>':denied?'<span class="hint">알림이 차단돼 있어요 — 브라우저(또는 휴대폰) 설정에서 이 사이트 알림을 허용해 주세요</span>':'<span class="hint">AI 가 답을 다 했거나 허락을 기다릴 때 알려 드려요</span><button class="btn small primary" id="push-on">이 기기에서 알림 받기</button>'}</div>
+  <label class="switch row-line"><input type="checkbox" id="pp-done" ${st.prefs?.done!==false?'checked':''}><span>작업이 끝났을 때</span></label>
+  <label class="switch row-line"><input type="checkbox" id="pp-ask" ${st.prefs?.ask!==false?'checked':''}><span>AI 가 허락을 기다릴 때 (✋ 승인 요청)</span></label>
+  <p class="hint small">알림 받는 기기 ${st.devices??0}대 · 이 방 화면을 보고 있을 때는 보내지 않아요</p>`;
+  $('#push-on')?.addEventListener('click',async()=>{
+    try{
+      if(await Notification.requestPermission()!=='granted'){toast('알림을 허용해야 받을 수 있어요');renderPush();return;}
+      const r=await swReady();const s=await r.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:u8(st.publicKey)});
+      await api('/api/push/subscribe',{method:'POST',body:JSON.stringify({subscription:s.toJSON(),label:navigator.userAgent.slice(0,80)})});toast('이 기기에서 알림을 받아요');renderPush();renderBadges();
+    }catch(e){toast(msg(e.message));}
+  });
+  $('#push-off')?.addEventListener('click',async()=>{const s=await mySub();if(s){await api('/api/push/unsubscribe',{method:'POST',body:JSON.stringify({endpoint:s.endpoint})}).catch(()=>{});await s.unsubscribe().catch(()=>{});}toast('이 기기 알림을 껐어요');renderPush();renderBadges();});
+  $('#push-test')?.addEventListener('click',async()=>{const r=await api('/api/push/test',{method:'POST',body:'{}'});toast(r.sent?'보냈어요 — 잠시 뒤 알림이 와요':'보낼 기기가 없어요');});
+  for(const k of ['done','ask'])$('#pp-'+k).onchange=async e=>{await api('/api/push/prefs',{method:'POST',body:JSON.stringify({[k]:e.target.checked})});};
+}
+$('#m-push').onclick=openFromMenu('push',renderPush);
+// 화면을 보고 있으면 30초마다 알림 — 서버는 45초 안에 신호가 있으면 푸시를 보내지 않는다
+let presenceTimer=null;
+function presence(){const v=document.visibilityState==='visible';fetch('/api/presence',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({visible:v}),keepalive:true}).catch(()=>{});clearInterval(presenceTimer);if(v)presenceTimer=setInterval(presence,30000);}
+document.addEventListener('visibilitychange',presence);
+// 알림을 눌러 들어오면 그 답변으로
+function jumpToHash(){const id=location.hash.slice(1);if(/^m\d+$/.test(id))setTimeout(()=>document.getElementById(id)?.scrollIntoView({block:'start'}),120);}
+navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.type==='open'){const u=new URL(e.data.url);if(u.hash){history.replaceState(null,'',u.hash);jumpToHash();}}});
+
 // ---- 시작 · SSE ----
 function mergeSnapshot(snap){
   const byId=new Map(state.messages.map(m=>[m.id,m]));
@@ -288,11 +333,13 @@ function connect(){
   es.addEventListener('state',e=>{applyState(JSON.parse(e.data));renderAll();});
   es.addEventListener('cli-login',e=>{const d=JSON.parse(e.data);const a=ad(d.adapterId);if(a){a.login=d.login;renderPeople();if(d.login?.status==='done')toast(a.label+' 연결 명령 완료');}});
 }
+
 async function boot(){
   const r=await fetch('/api/me',{credentials:'same-origin'});const me=await r.json().catch(()=>({}));
   if(!me.user){showGate(me);return;}
   $('#gate').hidden=true;$('#app').hidden=false;
   applyState(await api('/api/state'));renderAll();scrollBottom();connect();
+  presence();jumpToHash();swReady();   // v0.10
   if(!state.adapters.some(connected))setTimeout(()=>{renderPeople();$('#people').showModal();},400);
 }
 boot().catch(e=>{$('#conn').textContent='초기화 실패: '+e.message;$('#conn').className='conn bad';});
