@@ -65,13 +65,36 @@ function clip(id,text,html){
   const open=expanded.has(id);
   return `<div class="clip${open?' open':''}">${html}</div><button class="clip-btn" data-clip="${id}" data-lines="${lines}">${clipLabel(open,lines)}</button>`;
 }
+// v0.10.7 첨부 미리보기: 이미지는 그림, 영상은 플레이어, 글·코드는 앞부분 몇 줄, 그 밖은 아이콘 카드(이름·크기·열기)
+const VID_RE=/\.(mp4|webm|mov|m4v)$/i,TXT_RE=/\.(txt|md|markdown|csv|tsv|json|js|mjs|ts|py|html|css|xml|yml|yaml|log|sh|sql)$/i;
+const fileIcon=n=>/\.pdf$/i.test(n)?'📕':/\.(docx?|hwpx?)$/i.test(n)?'📝':/\.(xlsx?|csv|tsv)$/i.test(n)?'📊':/\.(pptx?)$/i.test(n)?'📽️':/\.(zip|tar|gz|7z|rar)$/i.test(n)?'🗜️':/\.(mp3|wav|m4a|ogg)$/i.test(n)?'🎵':TXT_RE.test(n)?'📄':'📎';
+const fileSize=n=>{const b=state.files?.find(f=>f.name===n)?.bytes;return b==null?'':b<1024?`${b}B`:b<1048576?`${(b/1024).toFixed(1)}KB`:`${(b/1048576).toFixed(1)}MB`;};
+const previewCache=new Map();
+function fileCardHtml(n,{rm=false}={}){
+  const u='/files/'+encodeURIComponent(n);const ext=(n.match(/\.(\w+)$/)?.[1]??'').toUpperCase();
+  const meta=[ext,fileSize(n)].filter(Boolean).join(' · ');
+  const prev=TXT_RE.test(n)?`<pre class="fprev" data-prev="${esc(n)}">…</pre>`:'';
+  return `<div class="fcard${rm?' rm':''}"${rm?` data-rm="${esc(n)}" title="${esc(n)} — 눌러서 빼기"`:''}><a class="fhead" href="${u}" target="_blank" rel="noopener"><span class="ficon">${fileIcon(n)}</span><span class="fname"><b>${esc(n)}</b><small>${esc(meta)}</small></span>${rm?'<b class="fx">✕</b>':'<span class="fopen">↗</span>'}</a>${prev}</div>`;
+}
+// 글·코드 파일은 앞 600자만 Range 로 받아 보여 준다 (한 번 받은 건 기억)
+async function fillPreviews(root){
+  for(const pre of root.querySelectorAll('pre.fprev[data-prev]')){
+    const n=pre.dataset.prev;delete pre.dataset.prev;
+    let t=previewCache.get(n);
+    if(t==null){try{const r=await fetch('/files/'+encodeURIComponent(n),{credentials:'same-origin',headers:{range:'bytes=0-599'}});t=r.ok?await r.text():'';}catch{t='';}
+      if(t.length>=600)t=t.slice(0,600)+' …';t=t.split('\n').slice(0,6).join('\n');previewCache.set(n,t);}
+    if(t)pre.textContent=t;else pre.remove();
+  }
+}
 function userHtml(m){
   const all=state.adapters.filter(connected).map(a=>a.id);
   const chips=m.mode==='orchestrate'?`<span class="chip-s">팀장 ${esc(label(m.lead))} → ${(m.workers??[]).map(label).map(esc).join(', ')}</span>`
     :(m.targets??[]).length&&!(m.targets.length===all.length&&m.targets.every(t=>all.includes(t)))?`<span class="chip-s">→ ${m.targets.map(label).map(esc).join(', ')}</span>`:'';
-  const files=(m.files??[]).filter(f=>!/\.(png|jpe?g|gif|webp)$/i.test(f)).map(f=>`<span class="chip-s">📎 ${esc(f)}</span>`).join('');
+  const files='';   // v0.10.7: 파일명 칩 대신 아래 미리보기 카드
   const pics=(m.files??[]).filter(f=>/\.(png|jpe?g|gif|webp)$/i.test(f));   // v0.10.3 내가 보낸 이미지는 그림으로
-  const picHtml=pics.length?`<div class="media me-media">${pics.map(f=>{const u='/files/'+encodeURIComponent(f);return `<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="${esc(f)}" loading="lazy"></a>`;}).join('')}</div>`:'';
+  const vids=(m.files??[]).filter(f=>VID_RE.test(f)),docs=(m.files??[]).filter(f=>!/\.(png|jpe?g|gif|webp)$/i.test(f)&&!VID_RE.test(f));
+  const picHtml=(pics.length||vids.length?`<div class="media me-media">${pics.map(f=>{const u='/files/'+encodeURIComponent(f);return `<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="${esc(f)}" loading="lazy"></a>`;}).join('')}${vids.map(f=>`<video src="/files/${encodeURIComponent(f)}" controls playsinline preload="none"></video>`).join('')}</div>`:'')
+    +(docs.length?`<div class="fcards me-files">${docs.map(f=>fileCardHtml(f)).join('')}</div>`:'');
   const hand=m.handoffFrom?`<span class="chip-s">↪ #${m.handoffFrom} 답변 포함</span>`:'';
   return `<div class="m me" id="m${m.id}"><div class="body">${picHtml}<div class="bubble">${clip(m.id,m.text,esc(m.text))}</div>${chips||files||hand?`<div class="chips" style="justify-content:flex-end">${chips}${files}${hand}</div>`:''}<div class="meta"><span>${timeOf(m.at)}</span></div></div></div>`;
 }
@@ -99,7 +122,7 @@ function aiHtml(m){
 function usageShort(u){const i=u.input??u.input_tokens??u.prompt_tokens,o=u.output??u.output_tokens??u.completion_tokens;return Number.isFinite(i)&&Number.isFinite(o)?`${i}+${o} 토큰`:'';}
 const SHOW_MAX=60,SHOW_STEP=100;let shown=SHOW_MAX;   // v0.10.6
 function renderTimeline(){
-  const tl=$('#timeline');const chat=$('#chat');const atBottom=chat.scrollHeight-chat.scrollTop-chat.clientHeight<80;
+  const tl=$('#timeline');const chat=$('#chat');const atBottom=follow;   // v0.10.7
   // v0.9.1 읽던 자리 유지: 화면 맨 위에 걸친 말풍선과 그 위치를 기억했다가 다시 그린 뒤 같은 자리로 맞춘다 (맨 아래를 보고 있을 때만 아래로 따라감)
   const anchor=atBottom?null:readingAnchor(chat,tl);
   let html='',lastDay='';
@@ -113,9 +136,9 @@ function renderTimeline(){
     const d=dayOf(m.at);if(d!==lastDay){html+=`<div class="day">${esc(d)}</div>`;lastDay=d;}
     html+=m.role==='user'?userHtml(m):aiHtml(m);
   }
-  tl.innerHTML=html;
+  tl.innerHTML=html;fillPreviews(tl);
   $('#more-older')?.addEventListener('click',async()=>{
-    const first=tl.querySelector('.m');const top=first?.getBoundingClientRect().top;
+    const first=tl.querySelector('.m');const top=first?.getBoundingClientRect().top;follow=false;   // 위를 보려는 것이니 따라가기 끔
     if(!hidden&&state.older){   // 화면에 있는 건 다 보였고 서버에 더 있음 → 100개 받아 앞에 붙인다
       const minId=Math.min(...state.messages.map(m=>m.id));
       try{const r=await api(`/api/messages?before=${minId}&limit=${SHOW_STEP}`);state.older=r.older??0;const have=new Set(state.messages.map(m=>m.id));for(const m of r.messages??[])if(!have.has(m.id))state.messages.push(m);state.messages.sort((a,b)=>a.id-b.id);shown+=(r.messages??[]).length;}catch(e){toast(msg(e.message));return;}
@@ -123,7 +146,7 @@ function renderTimeline(){
     renderTimeline();if(first){const el=document.getElementById(first.id);if(el)chat.scrollTop+=el.getBoundingClientRect().top-top;}
   });
   $('#stop').hidden=!state.messages.some(m=>m.status==='running');   // v0.8.8: 돌고 있는 AI 가 있을 때만 긴급 중지 버튼
-  if(atBottom)chat.scrollTop=chat.scrollHeight;
+  if(atBottom)scrollBottom();
   else if(anchor){const el=document.getElementById(anchor.id);if(el)chat.scrollTop+=el.getBoundingClientRect().top-anchor.top;}
   // v0.9.1 펼치기·접기: 전체를 다시 그리지 않고 그 자리에서 바꾼다. 말풍선 위치를 고정해 펼친 곳 아래로 늘어난다 (전에는 다시 그리면서 답변 맨 아래로 내려갔다)
   tl.querySelectorAll('[data-clip]').forEach(b=>b.onclick=()=>toggleClip(b));
@@ -145,7 +168,15 @@ function toggleClip(b){
   chat.scrollTop+=box.getBoundingClientRect().top-before;   // 말풍선 윗부분을 제자리에
   if(!open){const r=box.getBoundingClientRect(),c=chat.getBoundingClientRect();if(r.top<c.top)chat.scrollTop-=c.top-r.top+8;}   // 접었는데 말풍선 머리가 화면 위로 숨었으면 보이게
 }
-function scrollBottom(){const c=$('#chat');c.scrollTop=c.scrollHeight;}
+// v0.10.7 따라가기: 맨 아래를 보고 있으면(120px 안) 새 글·늘어나는 답을 따라 내려간다. 위로 올려 읽는 중이면 자리를 지키고 "↓ 새 글" 버튼만 띄운다.
+let follow=true,unseen=0;
+function scrollBottom(){follow=true;unseen=0;const c=$('#chat');c.scrollTop=c.scrollHeight;requestAnimationFrame(()=>{c.scrollTop=c.scrollHeight;renderJump();});}
+function nearBottom(){const c=$('#chat');return c.scrollHeight-c.scrollTop-c.clientHeight<120;}
+function renderJump(){const b=$('#jump');if(!b)return;b.hidden=follow;b.textContent=unseen?`↓ 새 글 ${unseen}`:'↓ 맨 아래';}
+$('#chat').addEventListener('scroll',()=>{const was=follow;follow=nearBottom();if(follow)unseen=0;if(was!==follow||follow)renderJump();},{passive:true});
+$('#jump').onclick=()=>scrollBottom();
+// 이미지가 늦게 떠서 키가 늘어도 따라간다
+$('#timeline').addEventListener('load',()=>{if(follow)scrollBottom();},true);
 
 // ---- 헤더 · 참여자 ----
 function renderHeader(){
@@ -212,7 +243,7 @@ function renderGdrive(){
 }
 async function loadGdrive(){try{gdrive=await api('/api/gdrive');}catch{gdrive=null;}renderFiles();}
 function watchGdrive(){clearInterval(gdrivePoll);gdrivePoll=setInterval(async()=>{if(!$('#files').open){clearInterval(gdrivePoll);return;}const was=gdrive?.connected;await loadGdrive();if(!gdrive?.pending){clearInterval(gdrivePoll);if(!was&&gdrive?.connected)toast('구글 드라이브 연결됨');}},3000);}
-function renderAttach(){const row=$('#attach-row');row.hidden=!attached.size;row.innerHTML=[...attached].map(n=>IMG_RE.test(n)?`<span class="att-img" data-rm="${esc(n)}" title="${esc(n)} — 눌러서 빼기"><img src="/files/${encodeURIComponent(n)}" alt=""><b>✕</b></span>`:`<span class="chip-s" data-rm="${esc(n)}">📎 ${esc(n)} ✕</span>`).join('');row.querySelectorAll('[data-rm]').forEach(c=>c.onclick=()=>{attached.delete(c.dataset.rm);renderAttach();renderFiles();});}
+function renderAttach(){const row=$('#attach-row');row.hidden=!attached.size;row.innerHTML=[...attached].map(n=>IMG_RE.test(n)?`<span class="att-img" data-rm="${esc(n)}" title="${esc(n)} — 눌러서 빼기"><img src="/files/${encodeURIComponent(n)}" alt=""><b>✕</b></span>`:VID_RE.test(n)?`<span class="att-img" data-rm="${esc(n)}" title="${esc(n)} — 눌러서 빼기"><video src="/files/${encodeURIComponent(n)}" muted preload="metadata"></video><b>✕</b></span>`:fileCardHtml(n,{rm:true})).join('');fillPreviews(row);row.querySelectorAll('[data-rm]').forEach(c=>c.onclick=e=>{if(e.target.closest('a')&&!e.target.closest('.fx'))return;e.preventDefault();attached.delete(c.dataset.rm);renderAttach();renderFiles();});}   // v0.10.7 영상·문서도 미리보기 카드
 function renderAll(){renderHeader();renderTimeline();renderPeople();renderFiles();renderBadges();}
 
 // ---- 보내기: 멘션 → 팀장 → 모두 ----
@@ -377,8 +408,8 @@ function connect(){
   es.onopen=async()=>{$('#conn').textContent='연결됨';$('#conn').className='conn ok';try{const snap=await api('/api/state');applyState(snap);renderAll();}catch{}};
   es.onerror=()=>{$('#conn').textContent='연결 끊김 — 재시도 중';$('#conn').className='conn bad';};
   es.addEventListener('cleared',e=>{const d=JSON.parse(e.data);state.messages=state.messages.filter(m=>m.id>=(d.clearedBefore??Infinity));for(const k of Object.keys(partials))delete partials[k];shown=SHOW_MAX;renderTimeline();});   // v0.10.5
-  es.addEventListener('message',e=>{const m=JSON.parse(e.data);const i=state.messages.findIndex(x=>x.id===m.id);const isNew=i<0;if(i>=0&&newer(state.messages[i],m))return;i>=0?state.messages[i]=m:state.messages.push(m);if(m.status!=='running')delete partials[m.id];renderTimeline();if(isNew)scrollBottom();});
-  es.addEventListener('partial',e=>{const p=JSON.parse(e.data);partials[p.id]=p;const el=document.getElementById('m'+p.id);if(!el){renderTimeline();return;}const t=el.querySelector('.partial'),g=el.querySelector('.progress');const prog=`수신 중 … ${(p.bytes/1024).toFixed(1)}KB · ${(p.elapsedMs/1000).toFixed(0)}s`;if(t&&p.partial){t.textContent=p.partial;if(g)g.textContent=prog;}else renderTimeline();});
+  es.addEventListener('message',e=>{const m=JSON.parse(e.data);const i=state.messages.findIndex(x=>x.id===m.id);const isNew=i<0;if(i>=0&&newer(state.messages[i],m))return;i>=0?state.messages[i]=m:state.messages.push(m);if(m.status!=='running')delete partials[m.id];renderTimeline();if(isNew){if(follow)scrollBottom();else{unseen++;renderJump();}}});
+  es.addEventListener('partial',e=>{const p=JSON.parse(e.data);partials[p.id]=p;const el=document.getElementById('m'+p.id);if(!el){renderTimeline();return;}const t=el.querySelector('.partial'),g=el.querySelector('.progress');const prog=`수신 중 … ${(p.bytes/1024).toFixed(1)}KB · ${(p.elapsedMs/1000).toFixed(0)}s`;if(t&&p.partial){t.textContent=p.partial;if(g)g.textContent=prog;if(follow)scrollBottom();}else renderTimeline();});
   es.addEventListener('budget',e=>{state.budget=JSON.parse(e.data);renderBadges();});
   es.addEventListener('memory',e=>{state.memory=JSON.parse(e.data);renderBadges();});
   es.addEventListener('files',e=>{state.files=JSON.parse(e.data);renderFiles();});
