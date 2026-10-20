@@ -138,6 +138,7 @@ function userEnv(ctx,adapter){
   for(const [k,v] of Object.entries(adapter.perUserEnv??{}))env[k]=String(v).replace(/\{home\}/g,()=>ctx.home);
   return env;
 }
+const MSG_WINDOW=300;   // v0.10.6 상태 스냅샷에 싣는 최근 메시지 수
 function emit(ctx,type,data){const line=`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;for(const res of ctx.clients)res.write(line);}
 // 사용자의 열린 SSE 와 진행 중 CLI 로그인을 닫는다 (계정 중지·로그아웃 시, 검수 FAIL 7). tokenHash 를 주면 그 세션의 SSE 만.
 function closeUserStreams(userId,tokenHash=null,{cancelRuns=false}={}){
@@ -213,7 +214,7 @@ function cooldownOf(ctx,id){const v=ctx.store.state.cooldowns?.[id];return v&&Da
 function setCooldown(ctx,id,iso){const c=ctx.store.state.cooldowns??(ctx.store.state.cooldowns={});if(iso)c[id]=iso;else delete c[id];}
 async function statePayload(ctx){
   const memory=await readMemory(ctx);
-  return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,avatar:typeof a.avatar==='string'&&/^[\w.\-]+\.(png|jpg)$/.test(a.avatar)?a.avatar:null,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream,quiet:isQuiet(a),cooldownUntil:cooldownOf(ctx,a.id)})),messages:ctx.store.state.messages,clearedBefore:ctx.store.clearedBefore(),workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
+  return {user:accounts.publicUser(ctx.user),lead:owner.user.lead,adapters:adapters.map(a=>({id:a.id,label:a.label,color:a.color,avatar:typeof a.avatar==='string'&&/^[\w.\-]+\.(png|jpg)$/.test(a.avatar)?a.avatar:null,roleHint:a.roleHint??'',session:ctx.store.session(a.id),auth:ctx.authState[a.id]??null,canLogin:!!(a.login&&Array.isArray(a.login.args)),login:loginPublic(ctx.logins[a.id]),stream:!!a.stream,quiet:isQuiet(a),cooldownUntil:cooldownOf(ctx,a.id)})),messages:ctx.store.state.messages.slice(-MSG_WINDOW),older:Math.max(0,ctx.store.state.messages.length-MSG_WINDOW),clearedBefore:ctx.store.clearedBefore(),workspace:ctx.workspace,evidenceRoot:ctx.runs,budget:budgetFor(ctx),memory:memoryPublic(memory),orchestrate:{maxTasks:ORCH_MAX_TASKS},limits:LIMITS};
 }
 // 프롬프트 합성: (메모리) + (다른 AI 답변 전문) + 본문 + 첨부 안내. 원문을 요약하거나 자르지 않는다.
 // v0.8.5 방 대화 공유: 같은 방의 최근 메시지(사용자 + 다른 AI 의 완료된 답변)를 프롬프트 앞에 붙여, AI 끼리 서로의 말을 보고 이어 말할 수 있게 한다.
@@ -498,6 +499,8 @@ const server=http.createServer(async(req,res)=>{
     const ctx=await userContext(user);
 
     if(req.method==='GET'&&url.pathname==='/api/state')return json(res,{...await statePayload(ctx),files:await listFiles(ctx)});
+    // v0.10.6 옛 메시지는 필요할 때만: 상태 스냅샷은 최근 MSG_WINDOW 개만 싣고(대화가 쌓이면 스냅샷이 수 MB → 화면이 느려짐), 더 위는 여기서 100개씩
+    if(req.method==='GET'&&url.pathname==='/api/messages'){const before=Number(url.searchParams.get('before'));const lim=Math.min(300,Math.max(1,Number(url.searchParams.get('limit'))||100));const all=ctx.store.state.messages;const olderAll=Number.isSafeInteger(before)?all.filter(m=>m.id<before):all;return json(res,{messages:olderAll.slice(-lim),older:Math.max(0,olderAll.length-lim)});}
     if(req.method==='GET'&&url.pathname==='/api/storage')return json(res,await janitor.info());   // v0.9.0
     if(req.method==='GET'&&url.pathname==='/api/gdrive')return json(res,gdrive.status());   // v0.9.2
     if(req.method==='GET'&&url.pathname==='/api/push')return json(res,push.status(url.searchParams.get('endpoint')));   // v0.10

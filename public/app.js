@@ -90,24 +90,38 @@ function aiHtml(m){
   const auth=m.status==='blocked'&&m.authCheck?`<details><summary>인증 확인</summary><pre>${esc(`${m.authCheck.state} (${m.authCheck.reason})${m.authCheck.subscriptionType?' / 구독 '+m.authCheck.subscriptionType:''}`)}</pre></details>`:'';
   const others=state.adapters.filter(x=>x.id!==m.adapter&&connected(x));
   // v0.10.2 AI 가 만든 이미지·영상: 답변 아래에 바로. 누르면 원본(새 탭)
-  const media=(m.media??[]).length?`<div class="media">${m.media.map(f=>{const u='/files/'+encodeURIComponent(f.name);return f.kind==='video'?`<video src="${u}" controls playsinline preload="metadata"></video>`:`<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="${esc(f.name)}" loading="lazy"></a>`;}).join('')}</div>`:'';
+  const media=(m.media??[]).length?`<div class="media">${m.media.map(f=>{const u='/files/'+encodeURIComponent(f.name);return f.kind==='video'?`<video src="${u}" controls playsinline preload="none"></video>`:`<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="${esc(f.name)}" loading="lazy"></a>`;}).join('')}</div>`:'';
   const acts=m.status==='done'&&m.kind!=='plan'?`<div class="acts">${others.map(x=>`<button data-handoff="${m.id}" data-to="${x.id}">→ ${esc(x.label)} 검토</button>`).join('')}<button data-memo="${m.id}">🧠 기억</button><button data-save="${m.id}">💾 저장</button><button data-copy="${m.id}">복사</button></div>`:'';
   const meta=`<span class="meta">${m.status==='done'&&m.elapsedMs?`<span>${(m.elapsedMs/1000).toFixed(1)}초</span>`:''}<span>${timeOf(m.at)}</span>${m.usage?`<span>${esc(usageShort(m.usage))}</span>`:''}</span>`;
   // v0.9.2 하얀 도트: 아바타·이름·시간을 한 줄 머리로, 본문은 말풍선 없이 그 아래
   return `<div class="m ai" id="m${m.id}" style="--ai-color:${esc(a.color)}"><div class="ai-head">${avHtml(a)}<span class="name">${esc(a.label)}</span>${meta}</div><div class="body"><div class="bubble ${cls}">${kind}${m.kind==='plan'&&m.status==='done'?plan+body:body+plan}${auth||ev}</div>${media}${acts}</div></div>`;
 }
 function usageShort(u){const i=u.input??u.input_tokens??u.prompt_tokens,o=u.output??u.output_tokens??u.completion_tokens;return Number.isFinite(i)&&Number.isFinite(o)?`${i}+${o} 토큰`:'';}
+const SHOW_MAX=60,SHOW_STEP=100;let shown=SHOW_MAX;   // v0.10.6
 function renderTimeline(){
   const tl=$('#timeline');const chat=$('#chat');const atBottom=chat.scrollHeight-chat.scrollTop-chat.clientHeight<80;
   // v0.9.1 읽던 자리 유지: 화면 맨 위에 걸친 말풍선과 그 위치를 기억했다가 다시 그린 뒤 같은 자리로 맞춘다 (맨 아래를 보고 있을 때만 아래로 따라감)
   const anchor=atBottom?null:readingAnchor(chat,tl);
   let html='',lastDay='';
   if(!state.messages.length)html=`<div class="sys">여기는 내 AI 오피스입니다.<br>오른쪽 위 참여자에서 구독 중인 AI 를 연결하면 방에 들어옵니다.</div>`;
-  for(const m of orderTimeline(state.messages)){   // v0.9.1: 모두에게 보낸 답은 먼저 끝난 AI 부터 (public/order.js)
+  // v0.10.6 가벼운 화면: 최근 SHOW_MAX 개만 그린다(대화가 쌓이면 DOM 이 커져 글자 입력마다 렉). 위의 "이전 대화 더 보기" 로 더 꺼낸다
+  const ordered=orderTimeline(state.messages);   // v0.9.1: 모두에게 보낸 답은 먼저 끝난 AI 부터 (public/order.js)
+  const hidden=Math.max(0,ordered.length-shown);
+  const older=hidden+(state.older??0);
+  if(older)html+=`<div class="sys more-wrap"><button class="btn small" id="more-older">▲ 이전 대화 ${older}개 더 보기</button></div>`;
+  for(const m of ordered.slice(hidden)){
     const d=dayOf(m.at);if(d!==lastDay){html+=`<div class="day">${esc(d)}</div>`;lastDay=d;}
     html+=m.role==='user'?userHtml(m):aiHtml(m);
   }
   tl.innerHTML=html;
+  $('#more-older')?.addEventListener('click',async()=>{
+    const first=tl.querySelector('.m');const top=first?.getBoundingClientRect().top;
+    if(!hidden&&state.older){   // 화면에 있는 건 다 보였고 서버에 더 있음 → 100개 받아 앞에 붙인다
+      const minId=Math.min(...state.messages.map(m=>m.id));
+      try{const r=await api(`/api/messages?before=${minId}&limit=${SHOW_STEP}`);state.older=r.older??0;const have=new Set(state.messages.map(m=>m.id));for(const m of r.messages??[])if(!have.has(m.id))state.messages.push(m);state.messages.sort((a,b)=>a.id-b.id);shown+=(r.messages??[]).length;}catch(e){toast(msg(e.message));return;}
+    }else shown+=SHOW_STEP;
+    renderTimeline();if(first){const el=document.getElementById(first.id);if(el)chat.scrollTop+=el.getBoundingClientRect().top-top;}
+  });
   $('#stop').hidden=!state.messages.some(m=>m.status==='running');   // v0.8.8: 돌고 있는 AI 가 있을 때만 긴급 중지 버튼
   if(atBottom)chat.scrollTop=chat.scrollHeight;
   else if(anchor){const el=document.getElementById(anchor.id);if(el)chat.scrollTop+=el.getBoundingClientRect().top-anchor.top;}
@@ -343,7 +357,7 @@ let presenceTimer=null;
 function presence(){const v=document.visibilityState==='visible';fetch('/api/presence',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({visible:v}),keepalive:true}).catch(()=>{});clearInterval(presenceTimer);if(v)presenceTimer=setInterval(presence,30000);}
 document.addEventListener('visibilitychange',presence);
 // 알림을 눌러 들어오면 그 답변으로
-function jumpToHash(){const id=location.hash.slice(1);if(/^m\d+$/.test(id))setTimeout(()=>document.getElementById(id)?.scrollIntoView({block:'start'}),120);}
+function jumpToHash(){const id=location.hash.slice(1);if(!/^m\d+$/.test(id))return;if(!document.getElementById(id)&&state.messages.some(m=>'m'+m.id===id)){shown=state.messages.length;renderTimeline();}setTimeout(()=>document.getElementById(id)?.scrollIntoView({block:'start'}),120);}
 navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.type==='open'){const u=new URL(e.data.url);if(u.hash){history.replaceState(null,'',u.hash);jumpToHash();}}});
 
 // ---- 시작 · SSE ----
@@ -357,12 +371,12 @@ function mergeSnapshot(snap){
 // 검수 V19: seq 가 있으면 seq 로, 없으면(옛 저장분) terminal→running 회귀만 막는다
 const TERMINAL=new Set(['done','error','blocked','cancelled']);
 function newer(cur,m){if(Number.isSafeInteger(cur.seq)&&Number.isSafeInteger(m.seq))return cur.seq>m.seq;return TERMINAL.has(cur.status)&&cur.status!==m.status;}   // seq 없음: 끝난 상태는 다른 상태로 되돌리지 않는다
-function applyState(s){state.adapters=s.adapters??state.adapters;if(s.lead!==undefined)state.lead=s.lead;if(s.messages)mergeSnapshot(s);if(s.files)state.files=s.files;if(s.budget)state.budget=s.budget;if(s.memory)state.memory=s.memory;if(s.user){state.user=s.user;try{roomBadge();}catch{}}}
+function applyState(s){state.adapters=s.adapters??state.adapters;if(Number.isSafeInteger(s.older))state.older=s.older;if(s.lead!==undefined)state.lead=s.lead;if(s.messages)mergeSnapshot(s);if(s.files)state.files=s.files;if(s.budget)state.budget=s.budget;if(s.memory)state.memory=s.memory;if(s.user){state.user=s.user;try{roomBadge();}catch{}}}
 function connect(){
   es?.close();es=new EventSource('/api/events');
   es.onopen=async()=>{$('#conn').textContent='연결됨';$('#conn').className='conn ok';try{const snap=await api('/api/state');applyState(snap);renderAll();}catch{}};
   es.onerror=()=>{$('#conn').textContent='연결 끊김 — 재시도 중';$('#conn').className='conn bad';};
-  es.addEventListener('cleared',e=>{const d=JSON.parse(e.data);state.messages=state.messages.filter(m=>m.id>=(d.clearedBefore??Infinity));for(const k of Object.keys(partials))delete partials[k];renderTimeline();});   // v0.10.5
+  es.addEventListener('cleared',e=>{const d=JSON.parse(e.data);state.messages=state.messages.filter(m=>m.id>=(d.clearedBefore??Infinity));for(const k of Object.keys(partials))delete partials[k];shown=SHOW_MAX;renderTimeline();});   // v0.10.5
   es.addEventListener('message',e=>{const m=JSON.parse(e.data);const i=state.messages.findIndex(x=>x.id===m.id);const isNew=i<0;if(i>=0&&newer(state.messages[i],m))return;i>=0?state.messages[i]=m:state.messages.push(m);if(m.status!=='running')delete partials[m.id];renderTimeline();if(isNew)scrollBottom();});
   es.addEventListener('partial',e=>{const p=JSON.parse(e.data);partials[p.id]=p;const el=document.getElementById('m'+p.id);if(!el){renderTimeline();return;}const t=el.querySelector('.partial'),g=el.querySelector('.progress');const prog=`수신 중 … ${(p.bytes/1024).toFixed(1)}KB · ${(p.elapsedMs/1000).toFixed(0)}s`;if(t&&p.partial){t.textContent=p.partial;if(g)g.textContent=prog;}else renderTimeline();});
   es.addEventListener('budget',e=>{state.budget=JSON.parse(e.data);renderBadges();});
