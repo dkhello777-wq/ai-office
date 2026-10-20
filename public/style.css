@@ -195,3 +195,10 @@ body.dragging::after{content:"여기에 놓으면 첨부돼요";position:fixed;i
 .attach-row .fprev{max-height:4.4em;font-size:11px}
 .att-img b{position:absolute;top:2px;right:2px;width:18px;height:18px;border-radius:50%;background:rgba(0,0,0,.6);color:#fff;font-size:11px;display:flex;align-items:center;justify-content:center;font-weight:500}
 .me-media{justify-content:flex-end;margin:0 0 6px}
+
+/* v0.10.10 이미지 크게 보기(앱 안에서) */
+.lightbox{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.92);display:flex;flex-direction:column;align-items:center;justify-content:center;touch-action:pinch-zoom}
+.lightbox img{-webkit-touch-callout:default;max-width:100vw;max-height:calc(100vh - 70px - env(safe-area-inset-bottom,0));object-fit:contain}
+.lb-bar{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;align-items:center;padding:10px 14px calc(12px + env(safe-area-inset-bottom,0));background:rgba(0,0,0,.6);color:#fff}
+.lb-bar .lb-name{flex:1;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lb-bar .btn{background:#fff;color:#222;border-color:#fff;text-decoration:none}

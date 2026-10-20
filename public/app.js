@@ -192,6 +192,12 @@ function nearBottom(){const c=$('#chat');return c.scrollHeight-c.scrollTop-c.cli
 function renderJump(){const b=$('#jump');if(!b)return;b.hidden=follow;b.textContent=unseen?`↓ 새 글 ${unseen}`:'↓ 맨 아래';}
 $('#chat').addEventListener('scroll',()=>{const was=follow;follow=nearBottom();if(follow)unseen=0;if(was!==follow||follow)renderJump();},{passive:true});
 $('#jump').onclick=()=>scrollBottom();
+// v0.10.10 이미지는 새 탭 대신 앱 안에서 크게 본다 (홈 화면 앱에서 새 탭은 앱 밖으로 나가며 로그인이 풀린다)
+function openLightbox(url,name){const lb=$('#lightbox');lb.querySelector('img').src=url;lb.querySelector('.lb-name').textContent=name;lb.querySelector('.lb-dl').href=url;lb.querySelector('.lb-dl').download=name;lb.querySelector('.lb-open').href=url;lb.hidden=false;}
+function closeLightbox(){const lb=$('#lightbox');lb.hidden=true;lb.querySelector('img').src='';}
+$('#lightbox').addEventListener('click',e=>{if(e.target.closest('.lb-bar a'))return;if(e.target.closest('.lb-close')||e.target===e.currentTarget)closeLightbox();});   // 이미지 자체는 탭해도 안 닫힘(꾹 눌러 저장할 수 있게)
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#lightbox').hidden)closeLightbox();});
+document.addEventListener('click',e=>{const a=e.target.closest('.media a');if(!a||!a.querySelector('img'))return;e.preventDefault();openLightbox(a.getAttribute('href'),a.querySelector('img').alt||'');});
 // 이미지가 늦게 떠서 키가 늘어도 따라간다
 $('#timeline').addEventListener('load',()=>{if(follow)scrollBottom();},true);
 

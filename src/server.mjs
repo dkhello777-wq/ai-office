@@ -92,8 +92,9 @@ function mutationGate(req,expectJson=true){
   if(expectJson&&!(req.headers['content-type']??'').startsWith('application/json'))return {error:'json_required',status:415};
   return null;
 }
-const setSessionCookie=(req,res,token)=>res.setHeader('Set-Cookie',`hub=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${30*24*3600}${isSecure(req)?'; Secure':''}`);
-const clearSessionCookie=(req,res)=>res.setHeader('Set-Cookie',`hub=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${isSecure(req)?'; Secure':''}`);
+// v0.10.10 SameSite=Lax: 홈 화면 앱(PWA)에서 이미지·파일을 새 탭으로 열면 앱 밖 브라우저로 넘어가며 Strict 쿠키가 안 붙어 login_required 가 났다. 변경(POST)은 mutationGate 의 Origin 검사가 막으므로 Lax 로 충분.
+const setSessionCookie=(req,res,token)=>res.setHeader('Set-Cookie',`hub=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30*24*3600}${isSecure(req)?'; Secure':''}`);
+const clearSessionCookie=(req,res)=>res.setHeader('Set-Cookie',`hub=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${isSecure(req)?'; Secure':''}`);
 
 // ---- 사용자별 컨텍스트: 폴더·대화 저장소·인증 상태·SSE 클라이언트·진행 중인 CLI 로그인 ----
 // 초기화 중인 Promise 를 캐시해 같은 사용자의 동시 첫 요청이 컨텍스트를 두 번 만들지 않게 한다 (검수 FAIL 7).

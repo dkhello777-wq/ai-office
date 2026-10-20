@@ -30,3 +30,11 @@ test('첨부 미리보기: 글·코드는 앞부분(Range 600자), 영상은 플
   const css=await readFile(ROOT+'public/style.css','utf8');
   for(const sel of ['.fcard{','.fcard .fprev{','.attach-row .fcard{','.jump{'])assert.ok(css.includes(sel),sel);
 });
+
+test('v0.10.10 이미지 크게 보기: 새 탭 대신 앱 안 라이트박스(저장·원본·닫기, 이미지 탭은 안 닫힘), 쿠키는 SameSite=Lax', async()=>{
+  const app=await readFile(ROOT+'public/app.js','utf8');
+  assert.match(app,/function openLightbox\(url,name\)/);assert.match(app,/const a=e\.target\.closest\('\.media a'\);if\(!a\|\|!a\.querySelector\('img'\)\)return;e\.preventDefault\(\);openLightbox/);
+  assert.match(app,/if\(e\.target\.closest\('\.lb-close'\)\|\|e\.target===e\.currentTarget\)closeLightbox\(\);\}\);/);
+  const html=await readFile(ROOT+'public/index.html','utf8');assert.match(html,/<div id="lightbox" class="lightbox" hidden><img alt=""><div class="lb-bar">.*lb-dl" download>저장<\/a>.*lb-open" target="_blank".*lb-close">닫기/);
+  const srv=await readFile(ROOT+'src/server.mjs','utf8');assert.match(srv,/hub=\$\{token\}; Path=\/; HttpOnly; SameSite=Lax;/);assert.doesNotMatch(srv,/SameSite=Strict/);
+});
