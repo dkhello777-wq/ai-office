@@ -125,35 +125,52 @@ function renderTimeline(){
   const tl=$('#timeline');const chat=$('#chat');const atBottom=follow;   // v0.10.7
   // v0.9.1 읽던 자리 유지: 화면 맨 위에 걸친 말풍선과 그 위치를 기억했다가 다시 그린 뒤 같은 자리로 맞춘다 (맨 아래를 보고 있을 때만 아래로 따라감)
   const anchor=atBottom?null:readingAnchor(chat,tl);
-  let html='',lastDay='';
-  if(!state.messages.length)html=`<div class="sys">여기는 내 AI 오피스입니다.<br>오른쪽 위 참여자에서 구독 중인 AI 를 연결하면 방에 들어옵니다.</div>`;
+  // v0.10.8 바뀐 말풍선만 갈아 끼운다(키 기반 재배치). 전체를 innerHTML 로 다시 그리면 content-visibility 가 위쪽 말풍선 높이를 추정치로 되돌려 화면이 위로 튀었다.
+  const want=[];   // [key, html|null(그대로 쓰기), sig]
+  if(!state.messages.length)want.push(['empty',`<div class="sys">여기는 내 AI 오피스입니다.<br>오른쪽 위 참여자에서 구독 중인 AI 를 연결하면 방에 들어옵니다.</div>`,'']);
   // v0.10.6 가벼운 화면: 최근 SHOW_MAX 개만 그린다(대화가 쌓이면 DOM 이 커져 글자 입력마다 렉). 위의 "이전 대화 더 보기" 로 더 꺼낸다
   const ordered=orderTimeline(state.messages);   // v0.9.1: 모두에게 보낸 답은 먼저 끝난 AI 부터 (public/order.js)
   const hidden=Math.max(0,ordered.length-shown);
   const older=hidden+(state.older??0);
-  if(older)html+=`<div class="sys more-wrap"><button class="btn small" id="more-older">▲ 이전 대화 ${older}개 더 보기</button></div>`;
+  if(older)want.push(['more',`<div class="sys more-wrap"><button class="btn small" id="more-older">▲ 이전 대화 ${older}개 더 보기</button></div>`,String(older)]);
+  const othersSig=state.adapters.filter(connected).map(a=>a.id).join(',');
+  let lastDay='';
   for(const m of ordered.slice(hidden)){
-    const d=dayOf(m.at);if(d!==lastDay){html+=`<div class="day">${esc(d)}</div>`;lastDay=d;}
-    html+=m.role==='user'?userHtml(m):aiHtml(m);
+    const d=dayOf(m.at);if(d!==lastDay){want.push(['day:'+d,`<div class="day">${esc(d)}</div>`,'']);lastDay=d;}
+    const sig=`${m.seq}|${m.status}|${m.status==='running'?partials[m.id]?.bytes??0:''}|${othersSig}|${(m.media??[]).length}|${m.role}`;
+    want.push(['m'+m.id,null,sig,m]);
   }
-  tl.innerHTML=html;fillPreviews(tl);
-  $('#more-older')?.addEventListener('click',async()=>{
+  const have=new Map();for(const el of tl.children)if(el.dataset.key)have.set(el.dataset.key,el);
+  const tpl=document.createElement('template');
+  const make=(key,html,sig)=>{tpl.innerHTML=html;const el=tpl.content.firstElementChild;el.dataset.key=key;el.dataset.sig=sig;bindActions(el);fillPreviews(el);return el;};
+  let i=0;
+  for(const [key,html,sig,m] of want){
+    let el=have.get(key);
+    if(!el||el.dataset.sig!==sig){const fresh=make(key,html??(m.role==='user'?userHtml(m):aiHtml(m)),sig);if(el)el.replaceWith(fresh);else tl.insertBefore(fresh,tl.children[i]??null);el=fresh;}
+    else if(tl.children[i]!==el)tl.insertBefore(el,tl.children[i]??null);
+    have.delete(key);i++;
+  }
+  for(const el of have.values())el.remove();
+  while(tl.children.length>want.length)tl.lastElementChild.remove();
+  const moreBtn=$('#more-older');if(moreBtn)moreBtn.onclick=async()=>{   // onclick: 노드를 재사용해도 핸들러가 겹치지 않는다
     const first=tl.querySelector('.m');const top=first?.getBoundingClientRect().top;follow=false;   // 위를 보려는 것이니 따라가기 끔
     if(!hidden&&state.older){   // 화면에 있는 건 다 보였고 서버에 더 있음 → 100개 받아 앞에 붙인다
       const minId=Math.min(...state.messages.map(m=>m.id));
       try{const r=await api(`/api/messages?before=${minId}&limit=${SHOW_STEP}`);state.older=r.older??0;const have=new Set(state.messages.map(m=>m.id));for(const m of r.messages??[])if(!have.has(m.id))state.messages.push(m);state.messages.sort((a,b)=>a.id-b.id);shown+=(r.messages??[]).length;}catch(e){toast(msg(e.message));return;}
     }else shown+=SHOW_STEP;
     renderTimeline();if(first){const el=document.getElementById(first.id);if(el)chat.scrollTop+=el.getBoundingClientRect().top-top;}
-  });
+  };
   $('#stop').hidden=!state.messages.some(m=>m.status==='running');   // v0.8.8: 돌고 있는 AI 가 있을 때만 긴급 중지 버튼
   if(atBottom)scrollBottom();
   else if(anchor){const el=document.getElementById(anchor.id);if(el)chat.scrollTop+=el.getBoundingClientRect().top-anchor.top;}
+}
+function bindActions(root){
   // v0.9.1 펼치기·접기: 전체를 다시 그리지 않고 그 자리에서 바꾼다. 말풍선 위치를 고정해 펼친 곳 아래로 늘어난다 (전에는 다시 그리면서 답변 맨 아래로 내려갔다)
-  tl.querySelectorAll('[data-clip]').forEach(b=>b.onclick=()=>toggleClip(b));
-  tl.querySelectorAll('[data-handoff]').forEach(b=>b.onclick=()=>handoff(Number(b.dataset.handoff),b.dataset.to));
-  tl.querySelectorAll('[data-save]').forEach(b=>b.onclick=async()=>{const name=prompt('저장할 파일 이름',`answer-${b.dataset.save}.md`);if(name){await api('/api/save',{method:'POST',body:JSON.stringify({messageId:Number(b.dataset.save),name})});toast('파일로 저장됨');}});
-  tl.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{navigator.clipboard.writeText(state.messages.find(m=>m.id===Number(b.dataset.copy))?.text??'');toast('복사됨');});
-  tl.querySelectorAll('[data-memo]').forEach(b=>b.onclick=async()=>{const note=prompt('메모리에 덧붙일 한 줄 설명 (비워도 됨)','');if(note===null)return;try{const r=await api('/api/memory/append',{method:'POST',body:JSON.stringify({messageId:Number(b.dataset.memo),note})});state.memory=r;renderBadges();toast('메모리에 추가됨');}catch(e){toast(msg(e.message));}});
+  root.querySelectorAll('[data-clip]').forEach(b=>b.onclick=()=>toggleClip(b));
+  root.querySelectorAll('[data-handoff]').forEach(b=>b.onclick=()=>handoff(Number(b.dataset.handoff),b.dataset.to));
+  root.querySelectorAll('[data-save]').forEach(b=>b.onclick=async()=>{const name=prompt('저장할 파일 이름',`answer-${b.dataset.save}.md`);if(name){await api('/api/save',{method:'POST',body:JSON.stringify({messageId:Number(b.dataset.save),name})});toast('파일로 저장됨');}});
+  root.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{navigator.clipboard.writeText(state.messages.find(m=>m.id===Number(b.dataset.copy))?.text??'');toast('복사됨');});
+  root.querySelectorAll('[data-memo]').forEach(b=>b.onclick=async()=>{const note=prompt('메모리에 덧붙일 한 줄 설명 (비워도 됨)','');if(note===null)return;try{const r=await api('/api/memory/append',{method:'POST',body:JSON.stringify({messageId:Number(b.dataset.memo),note})});state.memory=r;renderBadges();toast('메모리에 추가됨');}catch(e){toast(msg(e.message));}});
 }
 function readingAnchor(chat,tl){
   const top=chat.getBoundingClientRect().top;

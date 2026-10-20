@@ -25,7 +25,7 @@ test('첨부 미리보기: 글·코드는 앞부분(Range 600자), 영상은 플
   assert.match(app,/const files='';   \/\/ v0\.10\.7/);
   assert.match(app,/docs\.length\?`<div class="fcards me-files">\$\{docs\.map\(f=>fileCardHtml\(f\)\)\.join\(''\)\}<\/div>`/);
   assert.match(app,/vids\.map\(f=>`<video src="\/files\/\$\{encodeURIComponent\(f\)\}" controls playsinline preload="none"><\/video>`\)/);
-  assert.match(app,/tl\.innerHTML=html;fillPreviews\(tl\);/);
+  assert.match(app,/bindActions\(el\);fillPreviews\(el\);return el;/,'v0.10.8: 새 노드마다 미리보기·버튼 바인딩');
   assert.match(app,/:fileCardHtml\(n,\{rm:true\}\)\)\.join\(''\);fillPreviews\(row\);/);
   const css=await readFile(ROOT+'public/style.css','utf8');
   for(const sel of ['.fcard{','.fcard .fprev{','.attach-row .fcard{','.jump{'])assert.ok(css.includes(sel),sel);
