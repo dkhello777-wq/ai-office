@@ -292,9 +292,9 @@ async function attachMedia(ctx,adapter,id,since,extraText){
 }
 // ---- 한 AI 호출 한 번 = 답변 메시지 하나. 인증·예산 게이트 → 실행(부분 출력 스트리밍) → 증거·사용량 기록. ----
 // 반환: 저장된 답변 메시지(status done/blocked/error). 예외를 던지지 않는다.
-// v0.10.11 자동 새 대화 기준: 이번 실행의 입력 토큰(캐시 포함)이 sessionResetTokens 를 넘으면 세션을 버린다. 기본 200k, AI 별 config 로 조정(Grok 120k). 0 이면 끔.
-const SESSION_RESET_TOKENS=200000;
-function sessionTooBig(adapter,usage){const lim=Number.isFinite(adapter.sessionResetTokens)?adapter.sessionResetTokens:SESSION_RESET_TOKENS;if(!(lim>0))return false;return normalizeUsage(usage).input>lim;}
+// v0.10.11 자동 새 대화: config 에 sessionResetTokens 를 둔 AI 만(Grok 120k). 기본은 꺼짐 — Claude·Codex·Gemini 는 코딩 맥락을 잃지 않도록 절대 자동으로 세션을 버리지 않는다.
+const autoResetOn=adapter=>Number.isFinite(adapter.sessionResetTokens)&&adapter.sessionResetTokens>0;
+function sessionTooBig(adapter,usage){return autoResetOn(adapter)&&normalizeUsage(usage).input>adapter.sessionResetTokens;}
 async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSession=true}){
   const {store}=ctx;
   const reply=store.add({role:'assistant',adapter:adapter.id,replyTo,kind,status:'running',text:'',...extra});
@@ -350,7 +350,7 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
     const quota=!e.cancelled?parseQuota(`${e.stderr??''}\n${e.text??''}\n${e.message??''}`):null;   // v0.9.3 한도 소진 알아보기
     const resetAt=quota?.resetMs?new Date(Date.now()+quota.resetMs).toISOString():null;
     if(resetAt){setCooldown(ctx,adapter.id,resetAt);emit(ctx,'state',await statePayload(ctx));}
-    const autoReset=useSession&&!!e.timedOut;if(autoReset)store.resetSession(adapter.id);   // v0.10.11 시간 초과 뒤에는 자동 새 대화 (쌓인 맥락 때문에 느려졌을 가능성)
+    const autoReset=useSession&&!!e.timedOut&&autoResetOn(adapter);if(autoReset)store.resetSession(adapter.id);   // v0.10.11 시간 초과 뒤 자동 새 대화 — 켜 둔 AI(Grok)만
     store.update(reply.id,{status:e.cancelled?'cancelled':'error',error:quota?'quota_exhausted':e.message,sessionReset:autoReset||undefined,cliError:quota?e.message:undefined,resetAt,stderrTail,exitCode:e.exitCode??null,signal:e.signal??null,timedOut:!!e.timedOut,parseFailed:!!e.parseFailed,elapsedMs:e.elapsedMs??null,evidence:e.evidence??null,evidencePreserved:!!e.evidence&&!evidenceFailed,envBlockedNames:e.envBlockedNames??null,...(evidenceFailed&&typeof e.text==='string'?{text:e.text,hash:sha256(e.text),unstoredAnswer:true}:{})});
   }
   finally{ctx.running.delete(ac);if(slot)releaseSlot(ctx);}
