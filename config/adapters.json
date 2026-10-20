@@ -263,7 +263,9 @@
       },
       "roleHint": "트렌드 분석·자료 조사 (X 실시간 반응·웹 검색)",
       "runTimeoutMs": 1800000,
-      "_시간": "v0.10.1: 자료 조사는 검색을 여러 번 돌아 15분(기본 timeoutMs)을 넘겨 끊긴 사례가 있어 Grok 만 30분(runTimeoutMs). 대신 --max-turns 40 으로 같은 검색을 끝없이 반복하는 것은 막는다(헤드리스 전용 플래그, 공식 문서 14-headless)."
+      "_시간": "v0.10.1: 자료 조사는 검색을 여러 번 돌아 15분(기본 timeoutMs)을 넘겨 끊긴 사례가 있어 Grok 만 30분(runTimeoutMs). 대신 --max-turns 40 으로 같은 검색을 끝없이 반복하는 것은 막는다(헤드리스 전용 플래그, 공식 문서 14-headless).",
+      "sessionResetTokens": 120000,
+      "_sessionResetTokens": "v0.10.11 이어가기 입력이 12만 토큰을 넘으면 다음부터 새 대화(그록은 매 턴 대화 전체를 다시 보내 커질수록 느려짐)"
     },
     {
       "id": "mock",

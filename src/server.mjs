@@ -292,6 +292,9 @@ async function attachMedia(ctx,adapter,id,since,extraText){
 }
 // ---- 한 AI 호출 한 번 = 답변 메시지 하나. 인증·예산 게이트 → 실행(부분 출력 스트리밍) → 증거·사용량 기록. ----
 // 반환: 저장된 답변 메시지(status done/blocked/error). 예외를 던지지 않는다.
+// v0.10.11 자동 새 대화 기준: 이번 실행의 입력 토큰(캐시 포함)이 sessionResetTokens 를 넘으면 세션을 버린다. 기본 200k, AI 별 config 로 조정(Grok 120k). 0 이면 끔.
+const SESSION_RESET_TOKENS=200000;
+function sessionTooBig(adapter,usage){const lim=Number.isFinite(adapter.sessionResetTokens)?adapter.sessionResetTokens:SESSION_RESET_TOKENS;if(!(lim>0))return false;return normalizeUsage(usage).input>lim;}
 async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSession=true}){
   const {store}=ctx;
   const reply=store.add({role:'assistant',adapter:adapter.id,replyTo,kind,status:'running',text:'',...extra});
@@ -338,7 +341,8 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
     mediaText=`${r.stdout??''}\n${r.stderr??''}`;
     const approvalRequested=r.text.trimStart().startsWith(APPROVAL_MARK);   // v0.8.7: 삭제·과금 전 멈춰서 허락을 구한 답변
     if(approvalRequested&&kind==='task'&&!watching(ctx))push.notify('ask',{title:`✋ ${labelOf(adapter.id)}가 허락을 기다려요`,body:firstLine(r.text.replace(/^\s*\[승인 요청\]\s*/,'')),url:`/#m${reply.id}`,tag:`a${reply.id}`}).catch(()=>{});   // v0.10: 팀원은 종합까지 기다리지 않고 바로
-    store.update(reply.id,{status:'done',text:r.text,approvalRequested,usage:r.usage,elapsedMs:r.elapsedMs,session:r.session??session,hash:sha256(r.text),exitCode:r.exitCode,evidence:r.evidence,envBlockedNames:r.envBlockedNames,authCheck:publicAuth(auth),usageMonth:{...used}});
+    const autoReset=useSession&&sessionTooBig(adapter,r.usage);if(autoReset)store.resetSession(adapter.id);   // v0.10.11 대화가 커지면 다음부터 자동 새 대화 (매번 '새 대화'를 누르지 않아도 됨)
+    store.update(reply.id,{status:'done',text:r.text,approvalRequested,usage:r.usage,elapsedMs:r.elapsedMs,session:r.session??session,sessionReset:autoReset||undefined,hash:sha256(r.text),exitCode:r.exitCode,evidence:r.evidence,envBlockedNames:r.envBlockedNames,authCheck:publicAuth(auth),usageMonth:{...used}});
   }catch(e){
     const evidenceFailed=/^evidence_/.test(e.message);
     const stderrTail=typeof e.stderr==='string'&&e.stderr.trim()?e.stderr.trim().split('\n').slice(-8).map(l=>maskLine(l.slice(0,300))).join('\n').slice(-1200):null;   // v0.8.1: 실패 원인을 화면에서 볼 수 있게 stderr 꼬리(가림 처리)를 함께 둔다 — 원문은 증거 파일에
@@ -346,7 +350,8 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
     const quota=!e.cancelled?parseQuota(`${e.stderr??''}\n${e.text??''}\n${e.message??''}`):null;   // v0.9.3 한도 소진 알아보기
     const resetAt=quota?.resetMs?new Date(Date.now()+quota.resetMs).toISOString():null;
     if(resetAt){setCooldown(ctx,adapter.id,resetAt);emit(ctx,'state',await statePayload(ctx));}
-    store.update(reply.id,{status:e.cancelled?'cancelled':'error',error:quota?'quota_exhausted':e.message,cliError:quota?e.message:undefined,resetAt,stderrTail,exitCode:e.exitCode??null,signal:e.signal??null,timedOut:!!e.timedOut,parseFailed:!!e.parseFailed,elapsedMs:e.elapsedMs??null,evidence:e.evidence??null,evidencePreserved:!!e.evidence&&!evidenceFailed,envBlockedNames:e.envBlockedNames??null,...(evidenceFailed&&typeof e.text==='string'?{text:e.text,hash:sha256(e.text),unstoredAnswer:true}:{})});
+    const autoReset=useSession&&!!e.timedOut;if(autoReset)store.resetSession(adapter.id);   // v0.10.11 시간 초과 뒤에는 자동 새 대화 (쌓인 맥락 때문에 느려졌을 가능성)
+    store.update(reply.id,{status:e.cancelled?'cancelled':'error',error:quota?'quota_exhausted':e.message,sessionReset:autoReset||undefined,cliError:quota?e.message:undefined,resetAt,stderrTail,exitCode:e.exitCode??null,signal:e.signal??null,timedOut:!!e.timedOut,parseFailed:!!e.parseFailed,elapsedMs:e.elapsedMs??null,evidence:e.evidence??null,evidencePreserved:!!e.evidence&&!evidenceFailed,envBlockedNames:e.envBlockedNames??null,...(evidenceFailed&&typeof e.text==='string'?{text:e.text,hash:sha256(e.text),unstoredAnswer:true}:{})});
   }
   finally{ctx.running.delete(ac);if(slot)releaseSlot(ctx);}
   if(runStart)await attachMedia(ctx,adapter,reply.id,runStart,mediaText);   // v0.10.2

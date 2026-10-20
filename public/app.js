@@ -115,7 +115,7 @@ function aiHtml(m){
   // v0.10.2 AI 가 만든 이미지·영상: 답변 아래에 바로. 누르면 원본(새 탭)
   const media=(m.media??[]).length?`<div class="media">${m.media.map(f=>{const u='/files/'+encodeURIComponent(f.name);return f.kind==='video'?`<video src="${u}" controls playsinline preload="none"></video>`:`<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="${esc(f.name)}" loading="lazy"></a>`;}).join('')}</div>`:'';
   const acts=m.status==='done'&&m.kind!=='plan'?`<div class="acts">${others.map(x=>`<button data-handoff="${m.id}" data-to="${x.id}">→ ${esc(x.label)} 검토</button>`).join('')}<button data-memo="${m.id}">🧠 기억</button><button data-save="${m.id}">💾 저장</button><button data-copy="${m.id}">복사</button></div>`:'';
-  const meta=`<span class="meta">${m.status==='done'&&m.elapsedMs?`<span>${(m.elapsedMs/1000).toFixed(1)}초</span>`:''}<span>${timeOf(m.at)}</span>${m.usage?`<span>${esc(usageShort(m.usage))}</span>`:''}</span>`;
+  const meta=`<span class="meta">${m.status==='done'&&m.elapsedMs?`<span>${(m.elapsedMs/1000).toFixed(1)}초</span>`:''}<span>${timeOf(m.at)}</span>${m.usage?`<span>${esc(usageShort(m.usage))}</span>`:''}${m.sessionReset?`<span title="대화가 커지거나 시간 초과가 나서 다음 질문부터 이 AI 는 새 대화로 시작합니다 (방 대화 공유로 최근 맥락은 전달됨)">↺ 다음부터 새 대화</span>`:''}</span>`;
   // v0.9.2 하얀 도트: 아바타·이름·시간을 한 줄 머리로, 본문은 말풍선 없이 그 아래
   return `<div class="m ai" id="m${m.id}" style="--ai-color:${esc(a.color)}"><div class="ai-head">${avHtml(a)}<span class="name">${esc(a.label)}</span>${meta}</div><div class="body"><div class="bubble ${cls}">${kind}${m.kind==='plan'&&m.status==='done'?plan+body:body+plan}${auth||ev}</div>${media}${acts}</div></div>`;
 }
