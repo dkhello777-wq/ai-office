@@ -10,7 +10,7 @@ import {createReadStream} from 'node:fs';
 import {execFile} from 'node:child_process';
 import path from 'node:path';
 import {loadConfig,runAdapter,checkAuth,startLogin,maskLine} from './adapters/index.mjs';
-import {Store,sha256} from './store.mjs';
+import {Store,sha256,normalizeUsage} from './store.mjs';
 import {GDrive} from './gdrive.mjs';
 import {Push} from './push.mjs';
 import {findNewMedia,collectMedia,MEDIA_EXT} from './media.mjs';
@@ -349,6 +349,7 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
   }
   finally{ctx.running.delete(ac);if(slot)releaseSlot(ctx);}
   if(runStart)await attachMedia(ctx,adapter,reply.id,runStart,mediaText);   // v0.10.2
+  {const m=store.get(reply.id);if(m)console.log(`[run] #${m.id} ${adapter.id} ${m.status}${m.error?' '+m.error:''} ${m.elapsedMs?(m.elapsedMs/1000).toFixed(0)+'s':''} exit=${m.exitCode??'-'}${m.timedOut?' timedOut':''}${m.parseFailed?' parseFailed':''}${m.usage?` tok=${normalizeUsage(m.usage).input}+${normalizeUsage(m.usage).output}`:''}${m.stderrTail?' stderr: '+m.stderrTail.split('\n').at(-1).slice(0,160):''}`);}   // v0.10.9 실행 결과 한 줄(본문 없음) — Railway 로그에서 실패 원인을 볼 수 있게
   await persistThenEmit(ctx,reply.id);   // 검수 V13: 디스크에 남은 뒤에만 완료를 알린다
   emit(ctx,'budget',budgetFor(ctx));
   janitor.maybe();   // v0.9.0: 실행이 끝날 때마다 사용률을 보고, 높으면 바로 정리 (기다리지 않음)
