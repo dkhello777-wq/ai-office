@@ -196,7 +196,9 @@ const memoryPublic=text=>({chars:text.length,overLimit:text.length>MEMORY_MAX,ma
 function budgetFor(ctx){
   const limit=Number(owner.user.budget?.monthlyTokens??BUDGET_DEFAULT)||0;
   const u=ctx.store.usageFor();
-  return {month:u.month,tokens:u.tokens,calls:u.total.calls,byAdapter:u.byAdapter,limit,exceeded:limit>0&&u.tokens>=limit};
+  // v0.10.14 AI 별 API 환산 단가(config price)·전체 월 사용량·환율 — 화면이 입력/출력/환산 금액 표를 그린다
+  const prices=Object.fromEntries(adapters.filter(a=>a.price&&Number.isFinite(a.price.input)&&Number.isFinite(a.price.output)).map(a=>[a.id,{model:a.price.model??'',input:a.price.input,output:a.price.output,asOf:a.price.asOf??''}]));
+  return {month:u.month,tokens:u.tokens,calls:u.total.calls,byAdapter:u.byAdapter,limit,exceeded:limit>0&&u.tokens>=limit,prices,usdKrw:Number(config.usdKrw)||1400,months:ctx.store.state.usage};
 }
 
 const loginPublic=l=>l?{status:l.status,urls:l.urls??[],codes:l.codes??[],lastLine:l.lastLine??'',error:l.error??null,startedAt:l.startedAt,endedAt:l.endedAt??null,tail:l.tail??null,exitCode:l.exitCode??null}:null;

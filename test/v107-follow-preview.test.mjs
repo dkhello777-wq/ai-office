@@ -47,3 +47,10 @@ test('v0.10.13 실패 이유를 쉬운 말로: 무슨 일·원인 추정·다음
   assert.match(app,/429\|rate\.\?limit\|too many requests/);assert.match(app,/<details><summary>자세한 오류 출력<\/summary>/);
   const srv=await readFile(ROOT+'src/server.mjs','utf8');assert.match(srv,/runTimeoutMs:Number\.isSafeInteger\(a\.runTimeoutMs\)&&a\.runTimeoutMs>0\?a\.runTimeoutMs:config\.timeoutMs\}\)\)/);
 });
+
+test('v0.10.14 토큰 예산 표: AI 별 입력/출력/횟수/API 환산(이번 달·전체 기간), config 의 price·usdKrw 를 상태로', async()=>{
+  const app=await readFile(ROOT+'public/app.js','utf8');assert.match(app,/function renderBudgetTable\(\)/);assert.match(app,/\(u\.input\*p\.input\+u\.output\*p\.output\)\/1e6/);
+  const srv=await readFile(ROOT+'src/server.mjs','utf8');assert.match(srv,/prices,usdKrw:Number\(config\.usdKrw\)\|\|1400,months:ctx\.store\.state\.usage\}/);
+  const cfg=JSON.parse(await readFile(ROOT+'config/adapters.json','utf8'));assert.equal(cfg.usdKrw,1400);
+  for(const id of ['claude','codex','gemini','grok']){const p=cfg.adapters.find(a=>a.id===id).price;assert.ok(p&&p.input>0&&p.output>0,id);}
+});

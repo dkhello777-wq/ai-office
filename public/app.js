@@ -395,7 +395,19 @@ const openFromMenu=(id,fn)=>()=>{$('#menu').close();fn?.();$('#'+id).showModal()
 $('#m-memory').onclick=openFromMenu('memory',async()=>{const r=await api('/api/memory');$('#memory-text').value=r.text;$('#memory-info').textContent=`${r.chars.toLocaleString()}자${r.overLimit?` — 권장 상한 ${r.maxChars.toLocaleString()}자 초과`:''}`;});
 $('#memory-save').onclick=async()=>{try{const r=await api('/api/memory',{method:'POST',body:JSON.stringify({text:$('#memory-text').value})});$('#memory-info').textContent=`저장됨 · ${r.chars.toLocaleString()}자`;state.memory=r;renderBadges();}catch(e){toast(msg(e.message));}};
 $('#m-files').onclick=openFromMenu('files',()=>{renderFiles();loadGdrive().then(()=>{if(gdrive?.pending)watchGdrive();});});
-$('#m-budget').onclick=openFromMenu('budget',()=>{const b=state.budget;$('#budget-now').textContent=b?`${b.month} 사용 ${b.tokens.toLocaleString()} 토큰 · ${b.calls}회 · 상한 ${b.limit?b.limit.toLocaleString():'무제한'}`:'';$('#budget-in').value=b?.limit||'';});
+// v0.10.14 AI 별 토큰·API 환산 금액 표 (이번 달 + 전체 기간). 구독이라 실제 과금은 없고, "API 로 썼다면" 의 상한 추정(캐시 읽기도 정가).
+function renderBudgetTable(){
+  const b=state.budget;const el=$('#budget-table');if(!b){el.innerHTML='';return;}
+  const cost=(id,u)=>{const p=b.prices?.[id];if(!p)return null;return (u.input*p.input+u.output*p.output)/1e6;};
+  const krw=usd=>`${Math.round(usd*(b.usdKrw||1400)).toLocaleString()}원`;
+  const row=(label,u,c)=>`<tr><td>${esc(label)}</td><td>${u.input.toLocaleString()}</td><td>${u.output.toLocaleString()}</td><td>${u.calls}</td><td>${c==null?'-':`$${c.toFixed(2)}<br><small>${krw(c)}</small>`}</td></tr>`;
+  const section=(title,by)=>{let tot={input:0,output:0,calls:0},totC=0,any=false;const rows=Object.entries(by).map(([id,u])=>{const c=cost(id,u);tot.input+=u.input;tot.output+=u.output;tot.calls+=u.calls;if(c!=null){totC+=c;any=true;}return row(label(id),u,c);}).join('');
+    return `<h4>${esc(title)}</h4><table class="tbl"><thead><tr><th>AI</th><th>입력</th><th>출력</th><th>횟수</th><th>API 환산</th></tr></thead><tbody>${rows||'<tr><td colspan=5 class="hint">기록 없음</td></tr>'}${rows?row('합계',tot,any?totC:null).replace('<tr>','<tr class="sum">'):''}</tbody></table>`;};
+  const all={};for(const m of Object.values(b.months??{}))for(const [id,u] of Object.entries(m)){const t=all[id]??(all[id]={input:0,output:0,calls:0});t.input+=u.input;t.output+=u.output;t.calls+=u.calls;}
+  const basis=Object.entries(b.prices??{}).map(([id,p])=>`${label(id)}: ${p.model} $${p.input}/$${p.output}`).join(' · ');
+  el.innerHTML=section(`${b.month} (이번 달)`,b.byAdapter??{})+section(`전체 기간 (${Object.keys(b.months??{}).length}개월)`,all)+`<p class="hint small">환산 기준(100만 토큰당 입력/출력 USD, ${esc(Object.values(b.prices??{})[0]?.asOf??'')} 공개 정가): ${esc(basis)}. 환율 ${(b.usdKrw||1400).toLocaleString()}원 가정. 실제 과금은 없고(구독) "API 로 썼다면" 의 상한 추정 — 캐시 읽기도 정가로 쳤어요.</p>`;
+}
+$('#m-budget').onclick=openFromMenu('budget',()=>{const b=state.budget;$('#budget-now').textContent=b?`${b.month} 사용 ${b.tokens.toLocaleString()} 토큰 · ${b.calls}회 · 상한 ${b.limit?b.limit.toLocaleString():'무제한'}`:'';$('#budget-in').value=b?.limit||'';renderBudgetTable();});
 $('#budget-save').onclick=async()=>{try{const v=$('#budget-in').value;const r=await api('/api/settings/budget',{method:'POST',body:JSON.stringify({monthlyTokens:v===''?null:Number(v)})});state.budget=r.budget;renderBadges();$('#budget').close();toast('예산 저장됨');}catch(e){toast(msg(e.message));}};
 const roomBadge=()=>{$('#room-badge').textContent=state.user?.roomShare===false?'꺼짐':'켜짐 — AI 들이 서로의 말을 봅니다';};
 $('#m-room').onclick=async()=>{const next=state.user?.roomShare===false;try{await api('/api/settings/room',{method:'POST',body:JSON.stringify({share:next})});state.user={...(state.user??{}),roomShare:next};roomBadge();toast(next?'방 대화 공유 켬':'방 대화 공유 끔');}catch(e){toast(msg(e.message));}};

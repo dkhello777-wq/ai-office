@@ -208,3 +208,12 @@ body.dragging::after{content:"여기에 놓으면 첨부돼요";position:fixed;i
 .fail-what{font-weight:500}
 .fail-hint{font-size:13px;color:var(--warn)}
 .fail-next{font-size:13px;color:var(--ink2)}
+
+/* v0.10.14 토큰·환산 표 */
+#budget-table h4{margin:12px 0 6px;font-size:13.5px;font-weight:600}
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.tbl th,.tbl td{text-align:right;padding:6px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+.tbl th:first-child,.tbl td:first-child{text-align:left}
+.tbl th{color:var(--mute);font-weight:500}
+.tbl tr.sum td{font-weight:600;background:var(--soft)}
+.tbl small{color:var(--mute)}
