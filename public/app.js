@@ -104,9 +104,9 @@ function aiHtml(m){
   let body='',cls=m.status;
   if(m.status==='running')body=p?.partial?`<span class="partial">${esc(p.partial)}</span><div class="progress">수신 중 … ${(p.bytes/1024).toFixed(1)}KB · ${(p.elapsedMs/1000).toFixed(0)}s</div>`:`<span class="dots">${m.kind==='plan'?'계획 세우는 중':m.kind==='final'?'종합하는 중':'생각 중'}</span>`;
   else if(m.status==='done')body=(m.approvalRequested?`<div class="approval">✋ 승인 요청 — 이 AI 가 삭제나 과금이 필요한 일 앞에서 멈췄습니다. 내용을 읽고 허락하려면 답장으로 "진행해" 라고 보내세요.</div>`:'')+(m.kind==='plan'?`<details class="raw"><summary>계획 원문(JSON)</summary><pre>${esc(m.text)}</pre></details>`:clip(m.id,m.text,esc(m.text)));   // 팀장의 계획 JSON 은 접어 둔다 — 화면에는 분배 요약만, 답은 ③ 종합 말풍선에. v0.8.7: [승인 요청] 답변은 띠로 강조
-  else if(m.status==='blocked')body=`🚫 ${esc(msg(m.error))}${m.resetAt?` · ${esc(whenKo(m.resetAt))} 초기화`:''}`;
+  else if(m.status==='blocked')body=failureHtml(m,'🚫');
   else if(m.status==='cancelled')body='⏹ 중지됨 — 긴급 중지로 끊김'+(m.text?'\n\n'+esc(m.text):'');
-  else body=`⚠️ 오류: ${esc(msg(m.error))}${m.resetAt?` · ${esc(whenKo(m.resetAt))} 초기화까지 쉬어요`:''}${m.text?'\n\n'+esc(m.text):''}${m.stderrTail?`<details open><summary>CLI 오류 출력</summary><pre>${esc(m.stderrTail)}</pre></details>`:''}`;
+  else body=failureHtml(m,'⚠️');
   const kind=m.kind&&KIND[m.kind]?`<span class="kind ${m.kind}">${KIND[m.kind]}${m.taskTitle?' · '+esc(m.taskTitle):''}</span><br>`:'';
   const plan=m.kind==='plan'&&m.plan?`<div class="plan">분배: ${m.plan.tasks.length?m.plan.tasks.map(t=>`${esc(label(t.worker))} — ${esc(t.title||'(제목 없음)')}`).join(' · '):'팀원 없이 직접 답함'}${m.plan.dropped?` · 버린 작업 ${m.plan.dropped}개`:''}${m.plan.note?'<br>'+esc(m.plan.note):''}${m.orchestrateError?'<br>'+esc(msg(m.orchestrateError)):''}</div>`:'';
   const ev=m.evidence?`<details><summary>실행 증거</summary><pre>${esc(`종료 코드 ${m.exitCode??'-'}${m.signal?' / 시그널 '+m.signal:''}${m.timedOut?' / 시간 초과':''}\nstdout ${m.evidence.stdoutBytes}B · stderr ${m.evidence.stderrBytes}B\n${m.evidence.dir}`)}</pre></details>`:'';
@@ -118,6 +118,44 @@ function aiHtml(m){
   const meta=`<span class="meta">${m.status==='done'&&m.elapsedMs?`<span>${(m.elapsedMs/1000).toFixed(1)}초</span>`:''}<span>${timeOf(m.at)}</span>${m.usage?`<span>${esc(usageShort(m.usage))}</span>`:''}${m.sessionReset?`<span title="대화가 커지거나 시간 초과가 나서 다음 질문부터 이 AI 는 새 대화로 시작합니다 (방 대화 공유로 최근 맥락은 전달됨)">↺ 다음부터 새 대화</span>`:''}</span>`;
   // v0.9.2 하얀 도트: 아바타·이름·시간을 한 줄 머리로, 본문은 말풍선 없이 그 아래
   return `<div class="m ai" id="m${m.id}" style="--ai-color:${esc(a.color)}"><div class="ai-head">${avHtml(a)}<span class="name">${esc(a.label)}</span>${meta}</div><div class="body"><div class="bubble ${cls}">${kind}${m.kind==='plan'&&m.status==='done'?plan+body:body+plan}${auth||ev}</div>${media}${acts}</div></div>`;
+}
+// v0.10.13 실패 이유를 쉬운 말로: 무슨 일 + 다음에 할 일. 오류 출력(stderr)에서 흔한 원인도 알아낸다.
+function failureInfo(m){
+  const a=ad(m.adapter);const name=a?.label??m.adapter;const tail=String(m.stderrTail??'')+'\n'+String(m.cliError??'');
+  const tm=a?.runTimeoutMs??900000;const limit=tm>=60000?`${Math.round(tm/60000)}분`:`${Math.round(tm/1000)}초`;
+  const code=String(m.error??'');
+  const hint=/429|rate.?limit|too many requests/i.test(tail)?'요청이 너무 잦아 잠시 거절당했어요(속도 제한).':/overloaded|capacity|503|502|server error|internal error/i.test(tail)?'AI 회사 서버가 혼잡하거나 오류를 냈어요.':/ENOTFOUND|ECONNRESET|ETIMEDOUT|ECONNREFUSED|network|fetch failed|socket hang up/i.test(tail)?'네트워크 연결이 끊겼어요.':/context|too long|maximum.*(length|tokens)|token limit|prompt is too long/i.test(tail)?'대화·자료가 너무 길어 한 번에 넣을 수 있는 양을 넘었어요.':/unauthori[sz]ed|401|invalid.*token|expired|login|sign ?in/i.test(tail)?'로그인이 만료됐거나 풀렸어요.':/ENOSPC|no space/i.test(tail)?'서버 저장 공간이 부족해요.':/permission|EACCES|denied/i.test(tail)?'권한 문제로 막혔어요.':'';
+  const table={
+    cli_timeout:[`${name}이(가) 제한 시간 ${limit} 안에 답을 끝내지 못했어요.`,'질문을 더 작게 나누거나, 자료 조사라면 범위를 좁혀 다시 보내 보세요.'+(m.sessionReset?' 다음 질문부터는 새 대화로 가볍게 시작해요.':'')],
+    interrupted:['서버가 업데이트되거나 재시작되어 답이 중단됐어요.','같은 질문을 다시 보내 주세요.'],
+    quota_exhausted:[`${name} 구독의 사용 한도가 찼어요.`,m.resetAt?`${whenKo(m.resetAt)}에 풀려요. 그때까지 다른 AI 에게 맡기세요.`:'잠시 뒤 다시 해 보거나 다른 AI 에게 맡기세요.'],
+    quota_cooldown:[`${name}은(는) 한도 소진으로 쉬는 중이에요.`,m.resetAt?`${whenKo(m.resetAt)}에 다시 받아요. 참여자에서 '쉬는 시간 풀기'로 강제로 깨울 수도 있어요.`:''],
+    not_logged_in:[`${name} 연결이 끊겨 있어요.`,'참여자 → 연결하기로 다시 로그인하세요.'],
+    api_key_auth_detected:[`${name}이(가) API 키 모드라 막았어요.`,'구독 계정으로 다시 연결하세요(키 모드는 요금이 따로 나가요).'],
+    third_party_auth_detected:[`${name}이(가) 서드파티 인증이라 막았어요.`,'구독 계정으로 다시 연결하세요.'],
+    auth_unverified:[`${name} 로그인 상태를 확인할 수 없었어요.`,'메뉴 → 인증 상태 다시 확인 뒤 다시 보내 보세요.'],
+    cli_not_found:[`${name} 프로그램이 서버에 없어요.`,'관리자(주인)에게 알려 주세요.'],
+    empty_result:[`${name}이(가) 빈 답을 돌려줬어요.`,'다시 보내 보세요. 반복되면 질문을 바꿔 보세요.'],
+    parse_failed:[`${name}의 답을 읽을 수 없는 형식으로 받았어요.`,'다시 보내 보세요.'],
+    grok_result_missing:['그록이 결과 없이 끝났어요.','다시 보내 보세요. 반복되면 참여자에서 새 대화.'],
+    agy_result_missing:['제미나이가 결과 없이 끝났어요.','다시 보내 보세요.'],
+    grok_error:['그록 프로그램이 오류를 냈어요.','아래 오류 출력을 보시고, 로그인 문제면 다시 연결하세요.'],
+    sandbox_failed:['챗GPT(코덱스) 샌드박스가 서버에서 못 떠서 명령을 실행하지 못했어요.','파일을 건드리지 않는 질문으로 바꾸거나 다른 AI 에게 맡기세요.'],
+    budget_exceeded:['이번 달 토큰 예산 상한에 닿았어요.','메뉴 → 토큰 예산에서 상한을 올리세요.'],
+    persist_failed:['답은 받았지만 서버에 저장하지 못했어요.','메뉴 → 저장 공간을 확인하세요.'],
+    plan_parse_failed:['팀장이 작업 분배 계획을 정해진 형식으로 내지 않아 멈췄어요.','목표를 더 구체적으로 적어 다시 보내거나, 팀장을 다른 AI 로 바꿔 보세요.'],
+    all_tasks_failed:['팀원 작업이 전부 실패해 종합을 건너뛰었어요.','각 작업의 오류를 보고 다시 시도하세요.'],
+    workers_required:['팀원이 될 AI 가 더 연결돼야 해요.','참여자에서 AI 를 하나 더 연결하세요.'],
+    lead_required:['팀장 AI 를 먼저 지정해야 해요.','참여자에서 팀장으로 지정하세요.'],
+    user_disabled:['이 방이 중지 상태예요.',''],
+  };
+  let [what,next]=table[code]??[];
+  if(!what){const mExit=/^cli_exit_(\w+)$/.exec(code);what=mExit?`${name} 프로그램이 중간에 종료됐어요 (코드 ${mExit[1]}).`:`${name}에서 오류가 났어요 (${msg(code)}).`;next='다시 보내 보세요. 반복되면 아래 오류 출력을 캡처해 주인에게 알려 주세요.';}
+  return {what,next,hint};
+}
+function failureHtml(m,icon){
+  const f=failureInfo(m);
+  return `<div class="fail"><div class="fail-what">${icon} ${esc(f.what)}</div>${f.hint?`<div class="fail-hint">원인으로 보이는 것: ${esc(f.hint)}</div>`:''}${f.next?`<div class="fail-next">→ ${esc(f.next)}</div>`:''}</div>${m.text?'\n\n'+esc(m.text):''}${m.stderrTail?`<details><summary>자세한 오류 출력</summary><pre>${esc(m.stderrTail)}</pre></details>`:''}`;
 }
 function usageShort(u){const i=u.input??u.input_tokens??u.prompt_tokens,o=u.output??u.output_tokens??u.completion_tokens;return Number.isFinite(i)&&Number.isFinite(o)?`${i}+${o} 토큰`:'';}
 const SHOW_MAX=60,SHOW_STEP=100;let shown=SHOW_MAX;   // v0.10.6

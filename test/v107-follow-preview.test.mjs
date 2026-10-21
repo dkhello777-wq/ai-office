@@ -38,3 +38,12 @@ test('v0.10.10 이미지 크게 보기: 새 탭 대신 앱 안 라이트박스(�
   const html=await readFile(ROOT+'public/index.html','utf8');assert.match(html,/<div id="lightbox" class="lightbox" hidden><img alt=""><div class="lb-bar">.*lb-dl" download>저장<\/a>.*lb-open" target="_blank".*lb-close">닫기/);
   const srv=await readFile(ROOT+'src/server.mjs','utf8');assert.match(srv,/hub=\$\{token\}; Path=\/; HttpOnly; SameSite=Lax;/);assert.doesNotMatch(srv,/SameSite=Strict/);
 });
+
+test('v0.10.13 실패 이유를 쉬운 말로: 무슨 일·원인 추정·다음 할 일, 원래 오류 출력은 접어 둠', async()=>{
+  const app=await readFile(ROOT+'public/app.js','utf8');
+  assert.match(app,/function failureInfo\(m\)/);assert.match(app,/function failureHtml\(m,icon\)/);
+  assert.match(app,/else if\(m\.status==='blocked'\)body=failureHtml\(m,'🚫'\);/);assert.match(app,/else body=failureHtml\(m,'⚠️'\);/);
+  for(const code of ['cli_timeout','interrupted','quota_exhausted','not_logged_in','sandbox_failed','plan_parse_failed','budget_exceeded'])assert.ok(app.includes(`    ${code}:[`),code);
+  assert.match(app,/429\|rate\.\?limit\|too many requests/);assert.match(app,/<details><summary>자세한 오류 출력<\/summary>/);
+  const srv=await readFile(ROOT+'src/server.mjs','utf8');assert.match(srv,/runTimeoutMs:Number\.isSafeInteger\(a\.runTimeoutMs\)&&a\.runTimeoutMs>0\?a\.runTimeoutMs:config\.timeoutMs\}\)\)/);
+});

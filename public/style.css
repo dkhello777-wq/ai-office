@@ -202,3 +202,9 @@ body.dragging::after{content:"여기에 놓으면 첨부돼요";position:fixed;i
 .lb-bar{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;align-items:center;padding:10px 14px calc(12px + env(safe-area-inset-bottom,0));background:rgba(0,0,0,.6);color:#fff}
 .lb-bar .lb-name{flex:1;font-size:12.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lb-bar .btn{background:#fff;color:#222;border-color:#fff;text-decoration:none}
+
+/* v0.10.13 실패 이유 */
+.fail{display:flex;flex-direction:column;gap:3px}
+.fail-what{font-weight:500}
+.fail-hint{font-size:13px;color:var(--warn)}
+.fail-next{font-size:13px;color:var(--ink2)}
