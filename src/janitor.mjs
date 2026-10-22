@@ -26,10 +26,10 @@ export async function diskUsage(dir){
 async function sizeOf(p){
   let st;try{st=await stat(p);}catch{return {bytes:0,mtime:0};}
   if(!st.isDirectory())return {bytes:st.size,mtime:st.mtimeMs};
-  let bytes=0,mtime=st.mtimeMs;
+  let bytes=0,mtime=0;   // v0.10.16 폴더의 시각은 안에 든 파일들의 최신 수정 시각(폴더 자체 mtime 은 복사·생성 때 바뀌어 믿을 수 없다). 빈 폴더만 자기 mtime
   let names=[];try{names=await readdir(p);}catch{}
   for(const n of names){const r=await sizeOf(path.join(p,n));bytes+=r.bytes;if(r.mtime>mtime)mtime=r.mtime;}
-  return {bytes,mtime};
+  return {bytes,mtime:mtime||st.mtimeMs};
 }
 async function filesUnder(dir,out=[]){
   let ents=[];try{ents=await readdir(dir,{withFileTypes:true});}catch{return out;}
@@ -75,6 +75,21 @@ export async function breakdown(usersDir,{top=25}={}){
     users.push({user:u,areas,top:units.slice(0,top)});
   }
   return {users};
+}
+// v0.10.16 N일 지난 자료 지우기(사용자 요청): 작업 폴더의 파일·단위 폴더(node_modules 류)와 홈의 캐시류 중 수정 시각이 N일보다 오래된 것. memory.md·.git·로그인 정보·state.json·.grok/sessions 는 제외. dryRun 이면 목록만.
+export async function purgeOld(usersDir,user,{days=2,dryRun=false,now=Date.now()}={}){
+  if(!/^[\w.-]+$/.test(String(user)))return {error:'bad_path'};
+  const base=path.join(usersDir,user);const cutoff=now-Math.max(0,Number(days)||0)*86400e3;
+  const units=[];await walkUnits(path.join(base,'workspace'),'workspace',units);
+  for(const h of ['.tmp','.npm','.cache','.local','.pip','.bun','Downloads'])await walkUnits(path.join(base,'home',h),'home/'+h,units);
+  const victims=units.filter(u=>u.mtime<cutoff&&u.path!=='workspace/memory.md'&&!/(^|\/)\.git(\/|$)/.test(u.path));
+  let deleted=0,bytes=0;const items=[];
+  for(const v of victims.sort((a,b)=>b.bytes-a.bytes)){
+    items.push({path:v.path,bytes:v.bytes,mtime:v.mtime,dir:!!v.dir});
+    if(dryRun)continue;
+    const r=await deletePath(usersDir,user,v.path);if(r.ok){deleted++;bytes+=r.bytes;}
+  }
+  return {dryRun,days,candidates:victims.length,candidateBytes:victims.reduce((a,v)=>a+v.bytes,0),deleted,bytes,items:items.slice(0,50)};
 }
 // v0.10.15 사용자가 고른 항목 지우기: 작업 폴더(memory.md 제외)·홈의 캐시·node_modules 류·tmp 만. 로그인 정보(.claude/.codex/.grok 의 인증 파일 등)·state.json 은 거부.
 const DELETABLE_HOME=new Set(['.tmp','.npm','.cache','.local','.pip','.bun','.pnpm-store','.yarn','.gradle','.m2','.cargo','go','.rustup','.nvm','.config','.gemini','.playwright','.ms-playwright','Downloads','Desktop','Documents','tmp','.cursor','.vscode-server','.ollama']);
@@ -130,6 +145,7 @@ export function startJanitor(usersDir,opts={},log=console.log){
     state,run,
     async maybe(){try{const u=await diskUsage(usersDir);if(u.pct>=o.highPct)return run('pressure');}catch{}return null;},
     async info(detail=false){let u=null;try{u=await diskUsage(usersDir);}catch{}const r={usage:u,highPct:o.highPct,lowPct:o.lowPct,maxAgeDays:o.maxAgeDays,protectHours:o.protectHours,last:state.last};if(detail){try{r.breakdown=await breakdown(usersDir);}catch(e){r.breakdown={error:e.code??e.message};}}return r;},
-    deletePath:(user,rel)=>deletePath(usersDir,user,rel)
+    deletePath:(user,rel)=>deletePath(usersDir,user,rel),
+    purgeOld:(user,o)=>purgeOld(usersDir,user,o)
   };
 }

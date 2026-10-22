@@ -1,4 +1,4 @@
-# AI 오피스 v0.10.15 — 구독 중인 AI 들을 단톡방 하나에서 (1인용 · 클라우드)
+# AI 오피스 v0.10.16 — 구독 중인 AI 들을 단톡방 하나에서 (1인용 · 클라우드)
 
 내 서버 한 대에 띄워 두고, 폰·PC 브라우저로 접속해 **내가 구독 중인 AI 들과 단톡방처럼** 대화합니다. 참여자는 내가 연결한 AI 수만큼: Claude 만 있으면 1:1, ChatGPT(Codex) 까지 연결하면 3인 방.
 
@@ -270,6 +270,10 @@ Grok 은 이어가기 때 대화 전체를 매 턴 다시 보내 커질수록 �
 ### v0.10.14 → v0.10.15 (저장 공간: 무엇이 큰지 보고 직접 지우기)
 
 자동 정리는 실행 기록·CLI 로그만 지워서, 작업 폴더·홈에 큰 파일이 생기면 90% 를 넘어도 못 내렸다("아직 높음 — 작업 폴더 확인 필요"). 메뉴 → 저장 공간이 시트로 바뀌어 **사용률 막대 · 영역별 크기(작업 폴더/파일함/실행 기록/대화/홈의 폴더별) · 큰 항목 상위 25개(node_modules·.git 같은 폴더는 통째로 한 항목) · 지울 수 있는 항목엔 [지우기]**. `GET /api/storage?detail=1`(`breakdown`), `POST /api/storage/delete {path}`(허용: 작업 폴더(memory.md 제외)·홈의 캐시류(.npm/.cache/.tmp/.local/.config/.gemini…)·.claude/.codex 의 projects/sessions/log 류·.grok 의 logs/cache; 거부: state.json·로그인 정보·.grok/sessions·상위 탈출). 자동 정리 후보에 **캐시**(.npm/_cacache, .cache, .pip, pnpm store 등)도 추가. 화면은 .git 에는 버튼을 안 보인다.
+
+### v0.10.15 → v0.10.16 (N일 지난 자료 지우기)
+
+저장 공간 시트에 **"N일 지난 자료 · 미리보기·지우기"**: `POST /api/storage/purge {days, dryRun}` — 작업 폴더의 파일·단위 폴더(node_modules 류)와 홈의 캐시류 중 수정 시각이 N일보다 오래된 것을 먼저 목록·용량으로 보여 주고(dryRun), 확인하면 지운다. memory.md·.git·state.json·로그인 정보·.grok/sessions 는 제외. 폴더의 시각은 안에 든 파일의 최신 수정 시각으로 본다(폴더 자체 mtime 은 신뢰 불가).
 
 ## 8. 아직 없는 것 (v0.8 후보)
 

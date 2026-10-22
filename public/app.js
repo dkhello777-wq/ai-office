@@ -435,6 +435,15 @@ async function renderStorage(){
   body.querySelectorAll('.s-del').forEach(b=>b.onclick=async()=>{const p=b.dataset.path;if(!confirm(`지울까요?\n${p}\n${fmtMB(Number(b.dataset.bytes))}\n\n되돌릴 수 없어요.`))return;b.disabled=true;try{const r=await api('/api/storage/delete',{method:'POST',body:JSON.stringify({path:p})});toast(`지웠어요 · ${fmtMB(r.bytes)} 확보`);renderStorage();storageBadge();}catch(e){toast(msg(e.message));b.disabled=false;}});
 }
 $('#m-storage').onclick=()=>{$('#menu').close();$('#storage').showModal();renderStorage();};
+// v0.10.16 N일 지난 자료: 먼저 미리보기(dryRun) → 확인 → 삭제
+$('#storage-purge').onclick=async()=>{
+  const days=Number($('#purge-days').value);if(!Number.isFinite(days)||days<0){toast('일수를 확인하세요');return;}
+  let pv;try{pv=await api('/api/storage/purge',{method:'POST',body:JSON.stringify({days,dryRun:true})});}catch(e){toast(msg(e.message));return;}
+  if(!pv.candidates){toast(`${days}일 지난 자료가 없어요`);return;}
+  const list=pv.items.slice(0,12).map(i=>`· ${i.path} (${fmtMB(i.bytes)})`).join('\n')+(pv.candidates>12?`\n… 외 ${pv.candidates-12}개`:'');
+  if(!confirm(`${days}일 지난 자료 ${pv.candidates}개, ${fmtMB(pv.candidateBytes)}를 지울까요?\n\n${list}\n\n메모리·방 대화·로그인 정보·.git 은 안 지워요. 되돌릴 수 없어요.`))return;
+  try{const r=await api('/api/storage/purge',{method:'POST',body:JSON.stringify({days,dryRun:false})});toast(`${r.deleted}개 지움 · ${fmtMB(r.bytes)} 확보 · ${r.usage?.pct??'?'}%`);renderStorage();storageBadge();}catch(e){toast(msg(e.message));}
+};
 $('#storage-sweep').onclick=async()=>{try{const r=await api('/api/storage/cleanup',{method:'POST',body:'{}'});const x=r.result;toast(x?(x.deleted?`${x.deleted}개 정리 · ${(x.freedBytes/1048576).toFixed(1)}MB 확보 · ${x.after.pct}%`:'지울 대상이 없습니다 (규칙에 맞는 오래된 기록 없음)'):'정리 실패');renderStorage();storageBadge();}catch(e){toast(msg(e.message));}};
 $('#m-clear').onclick=async()=>{$('#menu').close();if(state.messages.some(m=>m.status==='running')){toast(ERR.busy);return;}if(!confirm('방의 대화를 모두 지울까요?\n\n• 화면의 메시지가 전부 사라집니다 (되돌릴 수 없음)\n• AI 들도 새 대화로 시작합니다 (이전 맥락을 잊음)\n• 파일함·메모리·토큰 예산은 그대로'))return;try{const r=await api('/api/clear',{method:'POST',body:'{}'});toast(r.removed?`${r.removed}개 메시지를 지웠어요 — 새 방처럼 시작`:'이미 비어 있어요');}catch(e){toast(msg(e.message));}};
 $('#m-auth').onclick=async()=>{$('#menu').close();toast('확인 중…');try{await api('/api/auth-check',{method:'POST',body:'{}'});}catch(e){toast(msg(e.message));}};

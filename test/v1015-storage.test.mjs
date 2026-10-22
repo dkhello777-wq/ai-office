@@ -33,3 +33,19 @@ test('화면·API: /api/storage?detail=1, /api/storage/delete, 저장 공간 시
   const app=await readFile(ROOT+'public/app.js','utf8');assert.match(app,/async function renderStorage\(\)/);assert.match(app,/api\('\/api\/storage\?detail=1'\)/);assert.match(app,/api\('\/api\/storage\/delete'/);
   const html=await readFile(ROOT+'public/index.html','utf8');assert.match(html,/<dialog id="storage" class="sheet">/);
 });
+
+test('v0.10.16 purgeOld: N일 지난 작업 파일·캐시만(미리보기/삭제), memory.md·.git·최근 파일·로그인 정보는 남긴다', async()=>{
+  const users=await mkdtemp(path.join(os.tmpdir(),'v1016-'));const u=path.join(users,'1');
+  const {utimes}=await import('node:fs/promises');
+  const mk=async(rel,bytes,ageDays)=>{const p=path.join(u,rel);await mkdir(path.dirname(p),{recursive:true});await writeFile(p,Buffer.alloc(bytes,1));const t=new Date(Date.now()-ageDays*86400e3);await utimes(p,t,t);};
+  await mk('workspace/memory.md',10,30);await mk('workspace/old.mp4',1000,5);await mk('workspace/new.txt',100,0.5);await mk('workspace/shared/old.png',500,3);
+  await mk('workspace/proj/node_modules/a.js',700,10);await mk('workspace/proj/.git/HEAD',20,10);await mk('home/.npm/_cacache/x',300,9);await mk('home/.claude/auth.json',5,40);await mk('home/.grok/sessions/s.json',5,40);
+  const {purgeOld}=await import('../src/janitor.mjs');
+  const pv=await purgeOld(users,'1',{days:2,dryRun:true});
+  assert.equal(pv.dryRun,true);assert.deepEqual(pv.items.map(i=>i.path).sort(),['home/.npm/_cacache','workspace/old.mp4','workspace/proj/node_modules','workspace/shared/old.png']);
+  await assert.doesNotReject(stat(path.join(u,'workspace/old.mp4')),'미리보기는 안 지움');
+  const r=await purgeOld(users,'1',{days:2});
+  assert.equal(r.deleted,4);assert.equal(r.bytes,2500);
+  for(const rel of ['workspace/old.mp4','workspace/shared/old.png','workspace/proj/node_modules','home/.npm/_cacache'])await assert.rejects(stat(path.join(u,rel)),rel);
+  for(const rel of ['workspace/memory.md','workspace/new.txt','workspace/proj/.git/HEAD','home/.claude/auth.json','home/.grok/sessions/s.json'])await assert.doesNotReject(stat(path.join(u,rel)),rel);
+});
