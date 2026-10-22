@@ -18,6 +18,7 @@ import {Owner,OWNER_ID,PASSWORD_MIN,validBudgetTokens,validPassword} from './own
 import {randomBytes} from 'node:crypto';
 import {extractPlan} from './orchestrate.mjs';
 import {startJanitor} from './janitor.mjs';
+import {ErrorWindow,workSummary,startBuildingReporter} from './building.mjs';
 
 const root=new URL('../',import.meta.url);
 const config=await loadConfig();
@@ -28,6 +29,7 @@ for(const d of [dataDir,usersDir]){try{await chmod(d,0o700);}catch{}}
 const adapters=config.adapters.filter(a=>a.enabled);
 // v0.9.0 저장 공간 안전장치: 사용률이 높아지면 오래된 실행 기록·CLI 대화 기록부터 지운다 (src/janitor.mjs, config.storage 로 조정)
 const janitor=startJanitor(usersDir,config.storage??{});
+const buildingErrors=new ErrorWindow();   // v0.10.18 최근 24시간 실행 오류 시각 (빌딩 보고용)
 const MIME={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.json':'application/json; charset=utf-8','.txt':'text/plain; charset=utf-8','.md':'text/plain; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.mp4':'video/mp4','.webm':'video/webm','.mov':'video/quicktime','.m4v':'video/mp4','.pdf':'application/pdf','.webmanifest':'application/manifest+json'};
 const BUDGET_DEFAULT=(()=>{const raw=process.env.HUB_MONTHLY_TOKENS??config.budget?.monthlyTokens??0;const n=Number(raw);if(!validBudgetTokens(n)){console.error(`월 토큰 상한 값이 잘못됨 (${raw}): 0 이상의 정수만`);process.exit(2);}return n;})();   // 0 = 무제한. 검수 V16: 로드·API 와 같은 검사
 const JSON_BODY_MAX=64*1024;   // 검수 V06: JSON 요청 본문 상한(바이트). 파일 업로드는 limits.uploadBytes.
@@ -357,7 +359,8 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
   }
   finally{ctx.running.delete(ac);if(slot)releaseSlot(ctx);}
   if(runStart)await attachMedia(ctx,adapter,reply.id,runStart,mediaText);   // v0.10.2
-  {const m=store.get(reply.id);if(m)console.log(`[run] #${m.id} ${adapter.id} ${m.status}${m.error?' '+m.error:''} ${m.elapsedMs?(m.elapsedMs/1000).toFixed(0)+'s':''} exit=${m.exitCode??'-'}${m.timedOut?' timedOut':''}${m.parseFailed?' parseFailed':''}${m.usage?` tok=${normalizeUsage(m.usage).input}+${normalizeUsage(m.usage).output}`:''}${m.stderrTail?' stderr: '+m.stderrTail.split('\n').at(-1).slice(0,160):''}`);}   // v0.10.9 실행 결과 한 줄(본문 없음) — Railway 로그에서 실패 원인을 볼 수 있게
+  {const m=store.get(reply.id);if(m?.status==='error')buildingErrors.record();   // v0.10.18 빌딩 보고용 오류 수(시각만)
+  if(m)console.log(`[run] #${m.id} ${adapter.id} ${m.status}${m.error?' '+m.error:''} ${m.elapsedMs?(m.elapsedMs/1000).toFixed(0)+'s':''} exit=${m.exitCode??'-'}${m.timedOut?' timedOut':''}${m.parseFailed?' parseFailed':''}${m.usage?` tok=${normalizeUsage(m.usage).input}+${normalizeUsage(m.usage).output}`:''}${m.stderrTail?' stderr: '+m.stderrTail.split('\n').at(-1).slice(0,160):''}`);}   // v0.10.9 실행 결과 한 줄(본문 없음) — Railway 로그에서 실패 원인을 볼 수 있게
   await persistThenEmit(ctx,reply.id);   // 검수 V13: 디스크에 남은 뒤에만 완료를 알린다
   emit(ctx,'budget',budgetFor(ctx));
   janitor.maybe();   // v0.9.0: 실행이 끝날 때마다 사용률을 보고, 높으면 바로 정리 (기다리지 않음)
@@ -679,3 +682,9 @@ server.listen(port,host,()=>{
   if(!owner.isSet)console.log(`아직 비밀번호가 없습니다. 화면의 "AI 오피스 만들기" 에 이 설정 코드를 넣으세요 (1회용, data/setup-code 에도 저장): ${setupCode}`);
   else console.log('주인 비밀번호 설정됨. 화면에서 로그인하세요.');
 });
+// v0.10.18 AI 빌딩 보고 (src/building.mjs): BUILDING_URL + BUILDING_REPORT_KEY 가 있을 때만. 버전·디스크·오류 수·작업 수를 5분마다(BUILDING_INTERVAL_SEC) 보낸다.
+if(process.env.BUILDING_URL&&process.env.BUILDING_REPORT_KEY){
+  const version=JSON.parse(await readFile(new URL('package.json',root),'utf8')).version;
+  startBuildingReporter({url:process.env.BUILDING_URL,key:process.env.BUILDING_REPORT_KEY,version,intervalSec:Number(process.env.BUILDING_INTERVAL_SEC||300)||300,
+    getDisk:async()=>(await janitor.info()).usage,getWork:()=>workSummary(contexts.values().next().value),errors:buildingErrors});
+}else console.log('AI 빌딩 보고: 꺼짐 (BUILDING_URL·BUILDING_REPORT_KEY 없음)');
