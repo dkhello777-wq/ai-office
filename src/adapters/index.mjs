@@ -145,7 +145,7 @@ for(const sig of ['SIGINT','SIGTERM'])process.once(sig,()=>{shutdown(0);});
 // 기본 허용: 실행에 필요한 비민감 변수. 어댑터별 envAllow 로 추가(예: CLAUDE_CONFIG_DIR).
 export const ENV_ALLOW_DEFAULT=['PATH','HOME','USER','LOGNAME','SHELL','LANG','LC_ALL','LC_CTYPE','TERM','TMPDIR','TMP','TEMP','XDG_CONFIG_HOME','XDG_DATA_HOME','XDG_CACHE_HOME','SYSTEMROOT','SystemRoot','COMSPEC','APPDATA','LOCALAPPDATA','USERPROFILE','PATHEXT','ProgramData'];
 // 어떤 어댑터에도 절대 넘기지 않는 이름(패턴). 허용 목록에 있어도 차단.
-export const ENV_DENY_PATTERNS=[/API_KEY$/i,/_TOKEN$/i,/SECRET/i,/PASSWORD/i,/BASE_URL$/i,/_ENDPOINT$/i,/^ANTHROPIC_/i,/^OPENAI_/i,/^GEMINI_/i,/^GOOGLE_/i,/^CLAUDE_CODE_USE_/i,/^CLAUDE_CODE_OAUTH/i,/^AWS_/i,/^AZURE_/i,/^GOOGLE_APPLICATION_CREDENTIALS$/i];
+export const ENV_DENY_PATTERNS=[/^BUILDING_/i,/API_KEY$/i,/_TOKEN$/i,/SECRET/i,/PASSWORD/i,/BASE_URL$/i,/_ENDPOINT$/i,/^ANTHROPIC_/i,/^OPENAI_/i,/^GEMINI_/i,/^GOOGLE_/i,/^CLAUDE_CODE_USE_/i,/^CLAUDE_CODE_OAUTH/i,/^AWS_/i,/^AZURE_/i,/^GOOGLE_APPLICATION_CREDENTIALS$/i];
 // extraEnv: 사용자별 격리 값(HOME, CLAUDE_CONFIG_DIR, CODEX_HOME 등). 허용 목록 뒤에 덮어쓰되 차단 패턴은 그대로 적용한다.
 export function buildChildEnv(parentEnv,adapter,extraEnv={}){
   const allow=new Set([...ENV_ALLOW_DEFAULT,...(adapter.envAllow??[])]);
