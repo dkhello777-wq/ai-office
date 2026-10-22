@@ -18,7 +18,7 @@ import {Owner,OWNER_ID,PASSWORD_MIN,validBudgetTokens,validPassword} from './own
 import {randomBytes} from 'node:crypto';
 import {extractPlan} from './orchestrate.mjs';
 import {startJanitor} from './janitor.mjs';
-import {ErrorWindow,workSummary,startBuildingReporter} from './building.mjs';
+import {ErrorWindow,workDetail,startBuildingReporter} from './building.mjs';
 
 const root=new URL('../',import.meta.url);
 const config=await loadConfig();
@@ -682,9 +682,9 @@ server.listen(port,host,()=>{
   if(!owner.isSet)console.log(`아직 비밀번호가 없습니다. 화면의 "AI 오피스 만들기" 에 이 설정 코드를 넣으세요 (1회용, data/setup-code 에도 저장): ${setupCode}`);
   else console.log('주인 비밀번호 설정됨. 화면에서 로그인하세요.');
 });
-// v0.10.18 AI 빌딩 보고 (src/building.mjs): BUILDING_URL + BUILDING_REPORT_KEY 가 있을 때만. 버전·디스크·오류 수·작업 수를 5분마다(BUILDING_INTERVAL_SEC) 보낸다.
+// v0.10.18 AI 빌딩 보고 (src/building.mjs): BUILDING_URL + BUILDING_REPORT_KEY 가 있을 때만. 버전·디스크·오류 수·작업 수와 작업 목록·결정 질문(v0.10.19)을 5분마다(BUILDING_INTERVAL_SEC) 보낸다.
 if(process.env.BUILDING_URL&&process.env.BUILDING_REPORT_KEY){
   const version=JSON.parse(await readFile(new URL('package.json',root),'utf8')).version;
   startBuildingReporter({url:process.env.BUILDING_URL,key:process.env.BUILDING_REPORT_KEY,version,intervalSec:Number(process.env.BUILDING_INTERVAL_SEC||300)||300,
-    getDisk:async()=>(await janitor.info()).usage,getWork:()=>workSummary(contexts.values().next().value),errors:buildingErrors});
+    getDisk:async()=>(await janitor.info()).usage,getWork:()=>workDetail(contexts.values().next().value,{label:labelOf}),errors:buildingErrors});
 }else console.log('AI 빌딩 보고: 꺼짐 (BUILDING_URL·BUILDING_REPORT_KEY 없음)');
