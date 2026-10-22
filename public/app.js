@@ -439,8 +439,10 @@ const fmtMB=b=>b>=1073741824?`${(b/1073741824).toFixed(2)}GB`:b>=1048576?`${(b/1
 const AREA_KO={workspace:'작업 폴더 전체',shared:'└ 파일함(shared)',runs:'실행 기록(자동 정리 대상)',state:'이 방의 대화(state.json)'};
 const HOME_KO={'.claude':'클로드 프로그램 폴더','.codex':'챗GPT(코덱스) 프로그램 폴더','.grok':'그록 프로그램 폴더','.gemini':'제미나이 프로그램 폴더','.npm':'npm 캐시(지워도 됨)','.cache':'캐시(지워도 됨)','.tmp':'임시 파일(지워도 됨)','.local':'로컬 설치물','.config':'설정'};
 async function renderStorage(){
-  const body=$('#storage-body');body.innerHTML='<p class="hint">계산 중…</p>';
-  let s;try{s=await api('/api/storage?detail=1');}catch(e){body.innerHTML=`<p class="err">${esc(msg(e.message))}</p>`;return;}
+  const body=$('#storage-body');
+  // v0.10.17 파일이 많으면 계산이 1~2분 걸린다(실서버 24초에 사용자가 창을 닫음) — 경과 시간을 보여 기다리게
+  const t0=Date.now(),tick=()=>{body.innerHTML=`<p class="hint">계산 중… ${Math.round((Date.now()-t0)/1000)}초 · 파일이 많으면 1~2분 걸려요. 창을 닫지 말고 기다려 주세요</p>`;};tick();const timer=setInterval(tick,1000);
+  let s;try{s=await api('/api/storage?detail=1');}catch(e){clearInterval(timer);body.innerHTML=`<p class="err">${esc(msg(e.message))}</p>`;return;}finally{clearInterval(timer);}
   showDiskWarn(s);const u=s.usage;if(u){$('#storage-sum').textContent=`${fmtGB(u.used)} / ${fmtGB(u.total)} (${u.pct}%)`;const bar=$('#storage-bar');bar.className='sbar'+(u.pct>=s.highPct?' bad':u.pct>=50?' warn':'');bar.firstElementChild.style.width=Math.min(100,u.pct)+'%';}
   const me=s.breakdown?.users?.find(x=>String(x.user)===String(state.user?.id))??s.breakdown?.users?.[0];
   if(!me){body.innerHTML=`<p class="hint">${esc(s.breakdown?.error??'자료 없음')}</p>`;return;}
@@ -458,7 +460,8 @@ $('#m-storage').onclick=()=>{$('#menu').close();$('#storage').showModal();render
 // v0.10.16 N일 지난 자료: 먼저 미리보기(dryRun) → 확인 → 삭제
 $('#storage-purge').onclick=async()=>{
   const days=Number($('#purge-days').value);if(!Number.isFinite(days)||days<0){toast('일수를 확인하세요');return;}
-  let pv;try{pv=await api('/api/storage/purge',{method:'POST',body:JSON.stringify({days,dryRun:true})});}catch(e){toast(msg(e.message));return;}
+  const btn=$('#storage-purge'),label=btn.textContent,t0=Date.now();btn.disabled=true;const timer=setInterval(()=>{btn.textContent=`찾는 중… ${Math.round((Date.now()-t0)/1000)}초`;},1000);   // v0.10.17 미리보기도 오래 걸릴 수 있어 진행 표시
+  let pv;try{pv=await api('/api/storage/purge',{method:'POST',body:JSON.stringify({days,dryRun:true})});}catch(e){toast(msg(e.message));return;}finally{clearInterval(timer);btn.disabled=false;btn.textContent=label;}
   if(!pv.candidates){toast(`${days}일 지난 자료가 없어요`);return;}
   const list=pv.items.slice(0,12).map(i=>`· ${i.path} (${fmtMB(i.bytes)})`).join('\n')+(pv.candidates>12?`\n… 외 ${pv.candidates-12}개`:'');
   if(!confirm(`${days}일 지난 자료 ${pv.candidates}개, ${fmtMB(pv.candidateBytes)}를 지울까요?\n\n${list}\n\n메모리·방 대화·로그인 정보·.git 은 안 지워요. 되돌릴 수 없어요.`))return;
