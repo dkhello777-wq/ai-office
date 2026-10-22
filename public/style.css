@@ -230,3 +230,14 @@ body.dragging::after{content:"여기에 놓으면 첨부돼요";position:fixed;i
 .sfile .sp small{color:var(--mute);display:block}
 .sfile .sz{white-space:nowrap;font-weight:500}
 .sfile .btn{padding:4px 10px;font-size:12px;flex:none}
+/* v0.10.17 저장 공간 경고 띠 · 파일함 찾기/정렬/지우기 */
+.diskwarn{display:block;flex:none;width:calc(100% - 24px);max-width:796px;margin:6px auto 0;padding:9px 14px;border:1px solid var(--warn);border-radius:12px;background:rgba(183,121,31,.1);color:var(--warn);font-size:13px;font-weight:500;text-align:left;cursor:pointer}
+.diskwarn.bad{border-color:var(--bad);background:rgba(214,69,69,.1);color:var(--bad)}
+.diskwarn[hidden]{display:none}
+.ftools{display:flex;gap:8px;margin:4px 0 6px}
+.ftools input{flex:1;min-width:0}
+.ftools select{flex:none;border:1px solid var(--line);border-radius:14px;padding:0 10px;background:var(--soft);color:var(--ink);font:inherit;font-size:14px}
+#filelist li .fdate{display:block;color:var(--mute);font-size:11.5px;margin-top:2px}
+#filelist li .fdel{flex:none;background:none;border:0;font-size:15px;padding:2px 4px;opacity:.55;cursor:pointer}
+#filelist li .fdel:hover,#filelist li .fdel:focus-visible{opacity:1}
+.gdrive[hidden]{display:none}
