@@ -104,6 +104,14 @@
   <ul id="filelist"></ul>
 </dialog>
 
+<dialog id="storage" class="sheet">
+  <div class="sheet-head"><b>저장 공간</b><span class="hint" id="storage-sum"></span><button class="icon close" data-close="storage">✕</button></div>
+  <div id="storage-bar" class="sbar"><i></i></div>
+  <div id="storage-body"><p class="hint">계산 중…</p></div>
+  <div class="row end"><button id="storage-sweep" class="btn">규칙대로 정리</button></div>
+  <p class="hint small">자동 정리는 실행 기록·AI 프로그램 로그·캐시만 지웁니다. 작업 파일은 여기서 직접 고르셔야 지워져요. 메모리·대화·로그인 정보는 지울 수 없습니다.</p>
+</dialog>
+
 <dialog id="budget" class="sheet">
   <div class="sheet-head"><b>토큰 예산</b><button class="icon close" data-close="budget">✕</button></div>
   <p id="budget-now" class="hint"></p>

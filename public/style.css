@@ -217,3 +217,16 @@ body.dragging::after{content:"여기에 놓으면 첨부돼요";position:fixed;i
 .tbl th{color:var(--mute);font-weight:500}
 .tbl tr.sum td{font-weight:600;background:var(--soft)}
 .tbl small{color:var(--mute)}
+
+/* v0.10.15 저장 공간 */
+.sbar{height:8px;border-radius:999px;background:var(--soft);overflow:hidden;margin:4px 0 12px}
+.sbar i{display:block;height:100%;background:var(--ok)}
+.sbar.warn i{background:var(--warn)}.sbar.bad i{background:var(--bad)}
+.sarea{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+.sarea small{color:var(--mute)}
+#storage-body h4{margin:14px 0 6px;font-size:13.5px;font-weight:600}
+.sfile{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+.sfile .sp{flex:1;min-width:0;word-break:break-all}
+.sfile .sp small{color:var(--mute);display:block}
+.sfile .sz{white-space:nowrap;font-weight:500}
+.sfile .btn{padding:4px 10px;font-size:12px;flex:none}

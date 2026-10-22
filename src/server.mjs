@@ -510,7 +510,7 @@ const server=http.createServer(async(req,res)=>{
     if(req.method==='GET'&&url.pathname==='/api/state')return json(res,{...await statePayload(ctx),files:await listFiles(ctx)});
     // v0.10.6 옛 메시지는 필요할 때만: 상태 스냅샷은 최근 MSG_WINDOW 개만 싣고(대화가 쌓이면 스냅샷이 수 MB → 화면이 느려짐), 더 위는 여기서 100개씩
     if(req.method==='GET'&&url.pathname==='/api/messages'){const before=Number(url.searchParams.get('before'));const lim=Math.min(300,Math.max(1,Number(url.searchParams.get('limit'))||100));const all=ctx.store.state.messages;const olderAll=Number.isSafeInteger(before)?all.filter(m=>m.id<before):all;return json(res,{messages:olderAll.slice(-lim),older:Math.max(0,olderAll.length-lim)});}
-    if(req.method==='GET'&&url.pathname==='/api/storage')return json(res,await janitor.info());   // v0.9.0
+    if(req.method==='GET'&&url.pathname==='/api/storage')return json(res,await janitor.info(url.searchParams.get('detail')==='1'));   // v0.9.0 · v0.10.15 detail=1: 무엇이 큰지
     if(req.method==='GET'&&url.pathname==='/api/gdrive')return json(res,gdrive.status());   // v0.9.2
     if(req.method==='GET'&&url.pathname==='/api/push')return json(res,push.status(url.searchParams.get('endpoint')));   // v0.10
     if(req.method==='GET'&&url.pathname==='/api/memory'){const text=await readMemory(ctx);return json(res,{text,...memoryPublic(text)});}
@@ -662,6 +662,7 @@ const server=http.createServer(async(req,res)=>{
       }
       if(url.pathname==='/api/cli-login/cancel'){const a=await bodyJson(req);const l=a&&ctx.logins[a.adapterId];if(l?.status==='running'&&l.handle)l.handle.cancel();return json(res,{ok:true});}
       // v0.8.8 긴급 중지: 돌고 있는 AI 전부(팀장·팀원·일반 답변)와 대기열을 즉시 끊는다. 로그인 진행은 건드리지 않는다.
+      if(url.pathname==='/api/storage/delete'){const a=await bodyJson(req);if(!a)return json(res,{error:'invalid_json'},400);const r=await janitor.deletePath(String(ctx.user?.id??'1'),String(a.path??''));if(r.error)return json(res,r,r.error==='not_found'?404:r.error==='not_deletable'?403:400);emit(ctx,'files',await listFiles(ctx));return json(res,{...r,...(await janitor.info())});}   // v0.10.15 고른 항목 지우기
       if(url.pathname==='/api/storage/cleanup'){const r=await janitor.run('manual');return json(res,{ok:!!r,result:r,...(await janitor.info())});}   // v0.9.0 지금 정리 (규칙은 자동 정리와 같다)
       if(url.pathname==='/api/stop'){const stopped=haltRuns(ctx);console.log(`긴급 중지: 실행 ${stopped}건 끊음`);return json(res,{ok:true,stopped});}
       return json(res,{error:'not_found'},404);

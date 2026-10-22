@@ -14,6 +14,8 @@ import path from 'node:path';
 
 export const JANITOR_DEFAULTS={highPct:70,lowPct:50,maxAgeDays:30,protectHours:6,intervalMinutes:10};
 const CLI_LOG_DIRS=['.codex/sessions','.codex/log','.claude/projects','.grok/logs','.grok/memtrace'];   // v0.10: Grok 로그(대화 세션 .grok/sessions 는 이어가기에 쓰여 지우지 않는다)
+// v0.10.15 캐시: 다시 받을 수 있는 것(npm·pip·브라우저 캐시 등). 자동 정리 대상에 포함
+const CACHE_DIRS=['.npm/_cacache','.npm/_logs','.cache','.codex/cache','.grok/cache','.local/share/pnpm','.pip','.bun/install/cache'];
 
 export async function diskUsage(dir){
   const s=await statfs(dir);
@@ -44,8 +46,53 @@ export async function listCandidates(usersDir){
     let dirs=[];try{dirs=await readdir(runs);}catch{}
     for(const d of dirs){const p=path.join(runs,d);const r=await sizeOf(p);items.push({path:p,bytes:r.bytes,mtime:r.mtime,kind:'run'});}
     for(const rel of CLI_LOG_DIRS)await filesUnder(path.join(usersDir,u,'home',rel),items);
+    for(const rel of CACHE_DIRS)await filesUnder(path.join(usersDir,u,'home',rel),items);
   }
   return items.sort((a,b)=>a.mtime-b.mtime);
+}
+
+// v0.10.15 무엇이 공간을 차지하는지: 사용자별 작업 폴더·홈 폴더(상위 폴더별)·실행 기록·state.json 크기 + 큰 파일/폴더 상위 목록.
+// 큰 항목은 "지울 수 있는 단위" 로 보인다: node_modules·.git 같은 폴더는 통째로 한 항목, 그 밖은 파일 단위.
+const UNIT_DIRS=new Set(['node_modules','.git','.venv','venv','__pycache__','.next','dist','build','.cache','_cacache']);
+async function walkUnits(dir,rel,out,depth=0){
+  let ents=[];try{ents=await readdir(dir,{withFileTypes:true});}catch{return;}
+  for(const e of ents){
+    const p=path.join(dir,e.name),r=rel?rel+'/'+e.name:e.name;
+    if(e.isDirectory()){if(UNIT_DIRS.has(e.name)||depth>=6){const z=await sizeOf(p);out.push({path:r,bytes:z.bytes,mtime:z.mtime,dir:true});}else await walkUnits(p,r,out,depth+1);}
+    else if(e.isFile()){try{const st=await stat(p);out.push({path:r,bytes:st.size,mtime:st.mtimeMs,dir:false});}catch{}}
+  }
+}
+export async function breakdown(usersDir,{top=25}={}){
+  const users=[];let names=[];try{names=await readdir(usersDir);}catch{return {users};}
+  for(const u of names){
+    const base=path.join(usersDir,u);let st;try{st=await stat(base);}catch{continue;}if(!st.isDirectory())continue;
+    const ws=path.join(base,'workspace'),home=path.join(base,'home');
+    const areas={workspace:(await sizeOf(ws)).bytes,shared:(await sizeOf(path.join(ws,'shared'))).bytes,runs:(await sizeOf(path.join(base,'runs'))).bytes,state:(await sizeOf(path.join(base,'state.json'))).bytes,home:{}};
+    let hn=[];try{hn=await readdir(home);}catch{}
+    for(const n of hn){const z=await sizeOf(path.join(home,n));if(z.bytes>0)areas.home[n]=z.bytes;}
+    const units=[];await walkUnits(ws,'workspace',units);await walkUnits(home,'home',units);
+    units.sort((a,b)=>b.bytes-a.bytes);
+    users.push({user:u,areas,top:units.slice(0,top)});
+  }
+  return {users};
+}
+// v0.10.15 사용자가 고른 항목 지우기: 작업 폴더(memory.md 제외)·홈의 캐시·node_modules 류·tmp 만. 로그인 정보(.claude/.codex/.grok 의 인증 파일 등)·state.json 은 거부.
+const DELETABLE_HOME=new Set(['.tmp','.npm','.cache','.local','.pip','.bun','.pnpm-store','.yarn','.gradle','.m2','.cargo','go','.rustup','.nvm','.config','.gemini','.playwright','.ms-playwright','Downloads','Desktop','Documents','tmp','.cursor','.vscode-server','.ollama']);
+export async function deletePath(usersDir,user,rel){
+  if(!/^[\w.-]+$/.test(String(user))||typeof rel!=='string'||!rel||rel.includes('\0'))return {error:'bad_path'};
+  const base=path.join(usersDir,user);const parts=rel.split('/').filter(Boolean);if(parts.some(x=>x==='..'||x==='.'))return {error:'bad_path'};
+  const top=parts[0];
+  let ok=false;
+  if(top==='workspace'&&parts.length>=2&&!(parts.length===2&&parts[1]==='memory.md'))ok=true;
+  else if(top==='home'&&parts.length>=2){const h=parts[1];if(DELETABLE_HOME.has(h))ok=true;else if(['.claude','.codex','.grok'].includes(h)&&parts.length>=3&&!(h==='.grok'&&parts[2]==='sessions')&&(UNIT_DIRS.has(parts[parts.length-1])||/^(projects|sessions|log|logs|cache|memtrace|debug|telemetry|statsig|shell-snapshots|todos|downloads|plugins)$/.test(parts[2])))ok=true;}   // .grok/sessions 는 이어가기에 쓰여 보호
+  if(!ok)return {error:'not_deletable'};
+  const target=path.join(base,...parts);
+  let real;try{const {realpath}=await import('node:fs/promises');real=await realpath(target);}catch{return {error:'not_found'};}
+  const baseReal=await (await import('node:fs/promises')).realpath(base);
+  if(!(real===baseReal||real.startsWith(baseReal+path.sep)))return {error:'bad_path'};
+  const z=await sizeOf(real);
+  try{await rm(real,{recursive:true,force:true});}catch(e){return {error:'delete_failed',detail:e.code};}
+  return {ok:true,path:rel,bytes:z.bytes};
 }
 
 // 한 번 정리. usage 함수는 테스트에서 바꿔 끼울 수 있다.
@@ -82,6 +129,7 @@ export function startJanitor(usersDir,opts={},log=console.log){
   return {
     state,run,
     async maybe(){try{const u=await diskUsage(usersDir);if(u.pct>=o.highPct)return run('pressure');}catch{}return null;},
-    async info(){let u=null;try{u=await diskUsage(usersDir);}catch{}return {usage:u,highPct:o.highPct,lowPct:o.lowPct,maxAgeDays:o.maxAgeDays,protectHours:o.protectHours,last:state.last};}
+    async info(detail=false){let u=null;try{u=await diskUsage(usersDir);}catch{}const r={usage:u,highPct:o.highPct,lowPct:o.lowPct,maxAgeDays:o.maxAgeDays,protectHours:o.protectHours,last:state.last};if(detail){try{r.breakdown=await breakdown(usersDir);}catch(e){r.breakdown={error:e.code??e.message};}}return r;},
+    deletePath:(user,rel)=>deletePath(usersDir,user,rel)
   };
 }
