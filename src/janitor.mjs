@@ -11,6 +11,7 @@
 // 규칙: ① maxAgeDays 보다 오래된 기록은 항상 지운다. ② 사용률이 highPct% 이상이면 lowPct% 아래로 내려갈 때까지 오래된 것부터 지운다.
 import {statfs,readdir,stat,rm} from 'node:fs/promises';
 import path from 'node:path';
+import {spawn} from 'node:child_process';
 
 export const JANITOR_DEFAULTS={highPct:70,lowPct:50,maxAgeDays:30,protectHours:6,intervalMinutes:10};
 const CLI_LOG_DIRS=['.codex/sessions','.codex/log','.claude/projects','.grok/logs','.grok/memtrace'];   // v0.10: Grok 로그(대화 세션 .grok/sessions 는 이어가기에 쓰여 지우지 않는다)
@@ -23,13 +24,30 @@ export async function diskUsage(dir){
   return {total,used,free,pct:total?Math.round(used/total*1000)/10:0};
 }
 
+// v0.10.17 빠른 한 번 훑기: 폴더 안을 동시에(Promise.all) 읽고, 크기·최신 수정 시각을 돌려준다. out 이 있으면 "지울 수 있는 단위"(파일, node_modules 류·깊이 6 넘는 폴더는 통째로)를 담는다.
+// 실서버(파일 수십만 개)에서 예전 방식(하나씩 차례로 stat, 같은 폴더를 여러 번 훑음)은 저장 공간 화면이 1분 넘게 안 떴다. 심볼릭 링크는 따라가지 않는다(중복 집계·고리 방지).
+const NONE={bytes:0,mtime:0};
+async function scan(dir,rel,out,depth=0,inUnit=false){
+  let ents=[];try{ents=await readdir(dir,{withFileTypes:true});}catch{return NONE;}
+  const rs=await Promise.all(ents.map(async e=>{
+    const p=path.join(dir,e.name),r=rel?rel+'/'+e.name:e.name;
+    if(e.isDirectory()){
+      const unit=!inUnit&&(UNIT_DIRS.has(e.name)||depth>=6);
+      const z=await scan(p,r,out,depth+1,inUnit||unit);
+      if(unit&&out){let mtime=z.mtime;if(!mtime){try{mtime=(await stat(p)).mtimeMs;}catch{}}out.push({path:r,bytes:z.bytes,mtime,dir:true});}
+      return z;
+    }
+    if(!e.isFile())return NONE;
+    try{const st=await stat(p);if(out&&!inUnit)out.push({path:r,bytes:st.size,mtime:st.mtimeMs,dir:false});return {bytes:st.size,mtime:st.mtimeMs};}catch{return NONE;}
+  }));
+  let bytes=0,mtime=0;for(const x of rs){bytes+=x.bytes;if(x.mtime>mtime)mtime=x.mtime;}
+  return {bytes,mtime};
+}
 async function sizeOf(p){
   let st;try{st=await stat(p);}catch{return {bytes:0,mtime:0};}
   if(!st.isDirectory())return {bytes:st.size,mtime:st.mtimeMs};
-  let bytes=0,mtime=0;   // v0.10.16 폴더의 시각은 안에 든 파일들의 최신 수정 시각(폴더 자체 mtime 은 복사·생성 때 바뀌어 믿을 수 없다). 빈 폴더만 자기 mtime
-  let names=[];try{names=await readdir(p);}catch{}
-  for(const n of names){const r=await sizeOf(path.join(p,n));bytes+=r.bytes;if(r.mtime>mtime)mtime=r.mtime;}
-  return {bytes,mtime:mtime||st.mtimeMs};
+  const z=await scan(p,'',null,0,true);   // v0.10.16 폴더의 시각은 안에 든 파일들의 최신 수정 시각(폴더 자체 mtime 은 믿을 수 없다). 빈 폴더만 자기 mtime
+  return {bytes:z.bytes,mtime:z.mtime||st.mtimeMs};
 }
 async function filesUnder(dir,out=[]){
   let ents=[];try{ents=await readdir(dir,{withFileTypes:true});}catch{return out;}
@@ -54,23 +72,44 @@ export async function listCandidates(usersDir){
 // v0.10.15 무엇이 공간을 차지하는지: 사용자별 작업 폴더·홈 폴더(상위 폴더별)·실행 기록·state.json 크기 + 큰 파일/폴더 상위 목록.
 // 큰 항목은 "지울 수 있는 단위" 로 보인다: node_modules·.git 같은 폴더는 통째로 한 항목, 그 밖은 파일 단위.
 const UNIT_DIRS=new Set(['node_modules','.git','.venv','venv','__pycache__','.next','dist','build','.cache','_cacache']);
-async function walkUnits(dir,rel,out,depth=0){
-  let ents=[];try{ents=await readdir(dir,{withFileTypes:true});}catch{return;}
-  for(const e of ents){
-    const p=path.join(dir,e.name),r=rel?rel+'/'+e.name:e.name;
-    if(e.isDirectory()){if(UNIT_DIRS.has(e.name)||depth>=6){const z=await sizeOf(p);out.push({path:r,bytes:z.bytes,mtime:z.mtime,dir:true});}else await walkUnits(p,r,out,depth+1);}
-    else if(e.isFile()){try{const st=await stat(p);out.push({path:r,bytes:st.size,mtime:st.mtimeMs,dir:false});}catch{}}
-  }
+// v0.10.17 GNU find 한 번으로 목록을 받아 단위로 묶는다(노드에서 파일마다 stat 하는 것보다 수십 배 빠름: 15만 개 8초 → 1초 안). find 가 없거나 실패하면 scan 으로.
+function findUnits(dir,rel,out){
+  return new Promise(resolve=>{
+    let ch;try{ch=spawn('find',[dir,'-mindepth','1','(','-type','f','-o','-type','d',')','-printf','%y\\0%s\\0%T@\\0%P\\0'],{stdio:['ignore','pipe','ignore']});}catch{resolve(null);return;}
+    const units=new Map(),dirM=new Map();let buf=Buffer.alloc(0),f=[],total=0,newest=0;
+    const unitOf=parts=>{for(let i=0;i<parts.length-1;i++)if(UNIT_DIRS.has(parts[i])||i>=6)return {key:parts.slice(0,i+1).join('/'),dir:true};return {key:parts.join('/'),dir:false};};
+    const take=([y,sz,t,rp])=>{
+      const parts=rp.split('/'),mtime=Number(t)*1000;
+      if(y==='d'){const i=parts.length-1;if(UNIT_DIRS.has(parts[i])||i>=6){const u=unitOf(parts.concat('x'));if(u.key===rp)dirM.set(rp,mtime);}return;}
+      const bytes=Number(sz);total+=bytes;if(mtime>newest)newest=mtime;
+      const u=unitOf(parts);const x=units.get(u.key);if(x){x.bytes+=bytes;if(mtime>x.mtime)x.mtime=mtime;}else units.set(u.key,{bytes,mtime,dir:u.dir});
+    };
+    ch.stdout.on('data',d=>{buf=buf.length?Buffer.concat([buf,d]):d;let i;while((i=buf.indexOf(0))>=0){f.push(buf.subarray(0,i).toString('utf8'));buf=buf.subarray(i+1);if(f.length===4){take(f);f=[];}}});
+    ch.on('error',()=>resolve(null));
+    ch.on('close',code=>{
+      if(code!==0&&code!==1){resolve(null);return;}   // 1 = 일부 폴더 읽기 실패(권한) — 읽은 만큼은 쓴다
+      for(const [k,m] of dirM)if(!units.has(k))units.set(k,{bytes:0,mtime:m,dir:true});
+      if(out)for(const [k,x] of units)out.push({path:rel?rel+'/'+k:k,bytes:x.bytes,mtime:x.mtime,dir:x.dir});
+      resolve({bytes:total,mtime:newest});
+    });
+  });
+}
+async function walkUnits(dir,rel,out){
+  try{if(!(await stat(dir)).isDirectory())return NONE;}catch{return NONE;}
+  const tmp=[];const r=await findUnits(dir,rel,tmp);
+  if(r){out.push(...tmp);return r;}
+  return scan(dir,rel,out);
 }
 export async function breakdown(usersDir,{top=25}={}){
   const users=[];let names=[];try{names=await readdir(usersDir);}catch{return {users};}
   for(const u of names){
     const base=path.join(usersDir,u);let st;try{st=await stat(base);}catch{continue;}if(!st.isDirectory())continue;
     const ws=path.join(base,'workspace'),home=path.join(base,'home');
-    const areas={workspace:(await sizeOf(ws)).bytes,shared:(await sizeOf(path.join(ws,'shared'))).bytes,runs:(await sizeOf(path.join(base,'runs'))).bytes,state:(await sizeOf(path.join(base,'state.json'))).bytes,home:{}};
-    let hn=[];try{hn=await readdir(home);}catch{}
-    for(const n of hn){const z=await sizeOf(path.join(home,n));if(z.bytes>0)areas.home[n]=z.bytes;}
-    const units=[];await walkUnits(ws,'workspace',units);await walkUnits(home,'home',units);
+    // v0.10.17 작업 폴더·홈을 한 번씩만 훑고, 영역별 크기는 단위 목록을 더해서 낸다(단위들이 빈틈없이 나눠 가짐)
+    const units=[];const [w,,runs,state]=await Promise.all([walkUnits(ws,'workspace',units),walkUnits(home,'home',units),sizeOf(path.join(base,'runs')),sizeOf(path.join(base,'state.json'))]);
+    const areas={workspace:w.bytes,shared:0,runs:runs.bytes,state:state.bytes,home:{}};
+    for(const x of units){if(x.path.startsWith('workspace/shared/'))areas.shared+=x.bytes;else if(x.path.startsWith('home/')){const n=x.path.split('/')[1];areas.home[n]=(areas.home[n]??0)+x.bytes;}}
+    for(const [n,v] of Object.entries(areas.home))if(!v)delete areas.home[n];
     units.sort((a,b)=>b.bytes-a.bytes);
     users.push({user:u,areas,top:units.slice(0,top)});
   }
@@ -80,8 +119,7 @@ export async function breakdown(usersDir,{top=25}={}){
 export async function purgeOld(usersDir,user,{days=2,dryRun=false,now=Date.now()}={}){
   if(!/^[\w.-]+$/.test(String(user)))return {error:'bad_path'};
   const base=path.join(usersDir,user);const cutoff=now-Math.max(0,Number(days)||0)*86400e3;
-  const units=[];await walkUnits(path.join(base,'workspace'),'workspace',units);
-  for(const h of ['.tmp','.npm','.cache','.local','.pip','.bun','Downloads'])await walkUnits(path.join(base,'home',h),'home/'+h,units);
+  const units=[];await Promise.all([walkUnits(path.join(base,'workspace'),'workspace',units),...['.tmp','.npm','.cache','.local','.pip','.bun','Downloads'].map(h=>walkUnits(path.join(base,'home',h),'home/'+h,units))]);
   const victims=units.filter(u=>u.mtime<cutoff&&u.path!=='workspace/memory.md'&&!/(^|\/)\.git(\/|$)/.test(u.path));
   let deleted=0,bytes=0;const items=[];
   for(const v of victims.sort((a,b)=>b.bytes-a.bytes)){
