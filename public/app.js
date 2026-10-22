@@ -287,16 +287,26 @@ function renderBadges(){
 }
 // v0.9.2 파일함 + 구글 드라이브로 보내기: 연결돼 있으면 파일마다 '드라이브로' 버튼. 연결은 기기 코드(폰에서 코드 입력) — 서버가 drive.file 권한으로 "AI 오피스" 폴더에만 올린다.
 let gdrive=null,gdrivePoll=null;
+// v0.10.17 파일함: 이름 찾기 · 정렬(최신/큰/이름) · 개수·총 크기 · 파일마다 🗑 지우기(저장 공간 지우기와 같은 서버 규칙)
+const fileView={q:'',sort:'new'};
 function renderFiles(){
-  const up=gdrive?.connected;
-  $('#filelist').innerHTML=state.files.map(f=>`<li class="${attached.has(f.name)?'on':''}" data-name="${esc(f.name)}"><span>${esc(f.name)}</span><small>${(f.bytes/1024).toFixed(1)}KB</small>${up?`<button class="btn small gd-up" data-up="${esc(f.name)}">드라이브로</button>`:''}<a href="/files/${encodeURIComponent(f.name)}" target="_blank" title="열기">↗</a></li>`).join('')||'<li class="hint">없음 — + 로 올리거나 답변을 저장하세요</li>';
+  const up=gdrive?.connected;const q=fileView.q.trim().toLowerCase();
+  const total=state.files.reduce((a,f)=>a+(f.bytes||0),0);
+  let list=q?state.files.filter(f=>f.name.toLowerCase().includes(q)):[...state.files];
+  if(fileView.sort==='big')list.sort((a,b)=>b.bytes-a.bytes);else if(fileView.sort==='new')list.sort((a,b)=>String(b.at??'').localeCompare(String(a.at??'')));else list.sort((a,b)=>a.name.localeCompare(b.name,'ko'));
+  const sum=$('#file-sum');if(sum)sum.textContent=state.files.length?`${state.files.length}개 · 모두 ${fmtMB(total)}${q?` · 찾은 것 ${list.length}개`:''} · 줄을 누르면 다음 메시지에 첨부`:'';
+  const when=f=>f.at?new Date(f.at).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
+  $('#filelist').innerHTML=list.map(f=>`<li class="${attached.has(f.name)?'on':''}" data-name="${esc(f.name)}"><span>${esc(f.name)}<small class="fdate">${esc(when(f))}</small></span><small>${fmtMB(f.bytes)}</small>${up?`<button class="btn small gd-up" data-up="${esc(f.name)}">드라이브로</button>`:''}<a href="/files/${encodeURIComponent(f.name)}" target="_blank" title="열기">↗</a><button class="fdel" data-del="${esc(f.name)}" data-bytes="${f.bytes}" title="지우기" aria-label="지우기">🗑</button></li>`).join('')||`<li class="hint">${q?'찾는 파일이 없어요':'없음 — + 로 올리거나 답변을 저장하세요'}</li>`;
   $('#filelist').querySelectorAll('li[data-name]').forEach(li=>li.onclick=e=>{if(e.target.closest('a,button'))return;const n=li.dataset.name;attached.has(n)?attached.delete(n):attached.add(n);renderFiles();renderAttach();});
   $('#filelist').querySelectorAll('[data-up]').forEach(b=>b.onclick=async()=>{b.disabled=true;b.textContent='올리는 중…';try{const r=await api('/api/gdrive/upload',{method:'POST',body:JSON.stringify({name:b.dataset.up})});b.textContent='올림 ✓';toast('드라이브에 올렸습니다 — '+r.name);}catch(e){b.disabled=false;b.textContent='드라이브로';toast(msg(e.message));if(/reconnect|not_connected/.test(e.message))loadGdrive();}});
+  $('#filelist').querySelectorAll('[data-del]').forEach(b=>b.onclick=async()=>{const n=b.dataset.del;if(!confirm(`이 파일을 지울까요?\n${n}\n${fmtMB(Number(b.dataset.bytes))}\n\n되돌릴 수 없어요.`))return;b.disabled=true;try{const r=await api('/api/storage/delete',{method:'POST',body:JSON.stringify({path:'workspace/shared/'+n})});attached.delete(n);state.files=state.files.filter(f=>f.name!==n);renderFiles();renderAttach();toast(`지웠어요 · ${fmtMB(r.bytes)} 확보`);showDiskWarn(r);}catch(e){b.disabled=false;toast(msg(e.message));}});
   renderGdrive();renderBadges();
 }
+$('#file-q').oninput=e=>{fileView.q=e.target.value;renderFiles();};
+$('#file-sort').onchange=e=>{fileView.sort=e.target.value;renderFiles();};
 function renderGdrive(){
   const el=$('#gdrive-bar');if(!el)return;const g=gdrive;
-  if(!g||!g.configured){el.innerHTML='<span class="hint">구글 드라이브로 보내기: 서버에 GDRIVE_CLIENT_ID·GDRIVE_CLIENT_SECRET 를 넣으면 켜집니다</span>';return;}
+  el.hidden=!g?.configured;if(el.hidden){el.innerHTML='';return;}   // v0.10.17 설정 안 된 서버에선 안내 띠를 숨김(파일함을 짧게)
   if(g.connected){el.innerHTML=`<span class="gd-on">● 구글 드라이브 연결됨</span>${g.folderUrl?`<a href="${esc(g.folderUrl)}" target="_blank" rel="noopener">AI 오피스 폴더 열기</a>`:''}<button class="btn small" id="gd-off">연결 해제</button>`;$('#gd-off').onclick=async()=>{if(!confirm('구글 드라이브 연결을 해제할까요? 이미 올린 파일은 드라이브에 그대로 남습니다.'))return;gdrive=await api('/api/gdrive/disconnect',{method:'POST',body:'{}'});renderFiles();};return;}
   if(g.pending){el.innerHTML=`<div><b>1.</b> <a href="${esc(g.pending.verificationUrl)}" target="_blank" rel="noopener">${esc(g.pending.verificationUrl)}</a> 를 열고<br><b>2.</b> 코드 <code>${esc(g.pending.userCode)}</code> 입력 → 허용</div><span class="hint">허용하면 자동으로 연결됩니다<span class="dots"></span></span><button class="btn small" id="gd-cancel">취소</button>`;$('#gd-cancel').onclick=async()=>{gdrive=await api('/api/gdrive/cancel',{method:'POST',body:'{}'});renderGdrive();};return;}
   el.innerHTML=`<span class="hint">파일을 구글 드라이브 "AI 오피스" 폴더로 보낼 수 있어요${g.lastError?` · 지난 시도: ${esc(msg(g.lastError))}`:''}</span><button class="btn small primary" id="gd-on">드라이브 연결</button>`;
@@ -413,7 +423,17 @@ const roomBadge=()=>{$('#room-badge').textContent=state.user?.roomShare===false?
 $('#m-room').onclick=async()=>{const next=state.user?.roomShare===false;try{await api('/api/settings/room',{method:'POST',body:JSON.stringify({share:next})});state.user={...(state.user??{}),roomShare:next};roomBadge();toast(next?'방 대화 공유 켬':'방 대화 공유 끔');}catch(e){toast(msg(e.message));}};
 // v0.9.0 저장 공간: 사용률 표시 + 지금 정리 (자동 정리와 같은 규칙 — 오래된 실행 기록·CLI 대화 기록만, 작업 파일·대화·로그인은 지우지 않음)
 const fmtGB=b=>(b/1073741824).toFixed(2)+'GB';
-async function storageBadge(){try{const s=await api('/api/storage');if(s.usage)$('#storage-badge').textContent=`${s.usage.pct}%`;return s;}catch{return null;}}
+async function storageBadge(){try{const s=await api('/api/storage');showDiskWarn(s);return s;}catch{return null;}}
+// v0.10.17 저장 공간 경고: 85% 이상이면 대화 화면 위에 띠(누르면 저장 공간 화면), 메뉴 배지도 색으로. 5분마다 다시 확인
+const DISK_WARN=85,DISK_BAD=95;
+function showDiskWarn(s){
+  const u=s?.usage;if(!u)return;const pct=u.pct;
+  const badge=$('#storage-badge');badge.textContent=`${pct}%`;badge.style.color=pct>=DISK_BAD?'var(--bad)':pct>=DISK_WARN?'var(--warn)':'';
+  const w=$('#disk-warn');w.hidden=pct<DISK_WARN;w.classList.toggle('bad',pct>=DISK_BAD);
+  w.textContent=pct>=DISK_BAD?`💽 저장 공간 ${pct}% — 거의 꽉 찼어요. 답변이 저장되지 않을 수 있어요 · 눌러서 정리`:`💽 저장 공간 ${pct}% — 곧 가득 차요 · 눌러서 정리`;
+}
+$('#disk-warn').onclick=()=>{$('#storage').showModal();renderStorage();};
+setInterval(()=>{if(!$('#app').hidden&&document.visibilityState==='visible')storageBadge();},5*60e3);
 // v0.10.15 저장 공간 화면: 사용률 막대 · 영역별 크기 · 큰 항목 상위 25개(지우기 버튼) · 규칙대로 정리
 const fmtMB=b=>b>=1073741824?`${(b/1073741824).toFixed(2)}GB`:b>=1048576?`${(b/1048576).toFixed(1)}MB`:`${(b/1024).toFixed(0)}KB`;
 const AREA_KO={workspace:'작업 폴더 전체',shared:'└ 파일함(shared)',runs:'실행 기록(자동 정리 대상)',state:'이 방의 대화(state.json)'};
@@ -421,7 +441,7 @@ const HOME_KO={'.claude':'클로드 프로그램 폴더','.codex':'챗GPT(코덱
 async function renderStorage(){
   const body=$('#storage-body');body.innerHTML='<p class="hint">계산 중…</p>';
   let s;try{s=await api('/api/storage?detail=1');}catch(e){body.innerHTML=`<p class="err">${esc(msg(e.message))}</p>`;return;}
-  const u=s.usage;if(u){$('#storage-sum').textContent=`${fmtGB(u.used)} / ${fmtGB(u.total)} (${u.pct}%)`;const bar=$('#storage-bar');bar.className='sbar'+(u.pct>=s.highPct?' bad':u.pct>=50?' warn':'');bar.firstElementChild.style.width=Math.min(100,u.pct)+'%';}
+  showDiskWarn(s);const u=s.usage;if(u){$('#storage-sum').textContent=`${fmtGB(u.used)} / ${fmtGB(u.total)} (${u.pct}%)`;const bar=$('#storage-bar');bar.className='sbar'+(u.pct>=s.highPct?' bad':u.pct>=50?' warn':'');bar.firstElementChild.style.width=Math.min(100,u.pct)+'%';}
   const me=s.breakdown?.users?.find(x=>String(x.user)===String(state.user?.id))??s.breakdown?.users?.[0];
   if(!me){body.innerHTML=`<p class="hint">${esc(s.breakdown?.error??'자료 없음')}</p>`;return;}
   let h='<h4>어디에 얼마나</h4>';
@@ -519,7 +539,7 @@ async function boot(){
   if(!me.user){showGate(me);return;}
   $('#gate').hidden=true;$('#app').hidden=false;
   applyState(await api('/api/state'));renderAll();scrollBottom();connect();
-  presence();jumpToHash();swReady();   // v0.10
+  presence();jumpToHash();swReady();storageBadge();   // v0.10 · v0.10.17 저장 공간 경고 띠
   if(!state.adapters.some(connected))setTimeout(()=>{renderPeople();$('#people').showModal();},400);
 }
 boot().catch(e=>{$('#conn').textContent='초기화 실패: '+e.message;$('#conn').className='conn bad';});
