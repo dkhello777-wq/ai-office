@@ -18,7 +18,7 @@ import {Owner,OWNER_ID,PASSWORD_MIN,validBudgetTokens,validPassword} from './own
 import {randomBytes} from 'node:crypto';
 import {extractPlan} from './orchestrate.mjs';
 import {startJanitor} from './janitor.mjs';
-import {ErrorWindow,workDetail,startBuildingReporter} from './building.mjs';
+import {ErrorWindow,workDetail,startBuildingReporter,startBuildingWorker} from './building.mjs';
 
 const root=new URL('../',import.meta.url);
 const config=await loadConfig();
@@ -688,3 +688,10 @@ if(process.env.BUILDING_URL&&process.env.BUILDING_REPORT_KEY){
   startBuildingReporter({url:process.env.BUILDING_URL,key:process.env.BUILDING_REPORT_KEY,version,intervalSec:Number(process.env.BUILDING_INTERVAL_SEC||300)||300,
     getDisk:async()=>(await janitor.info()).usage,getWork:()=>workDetail(contexts.values().next().value,{label:labelOf}),errors:buildingErrors});
 }else console.log('AI 빌딩 보고: 꺼짐 (BUILDING_URL·BUILDING_REPORT_KEY 없음)');
+// v0.10.20 빌딩 지시 받기: BUILDING_URL + BUILDING_WORKER_KEY 가 있을 때만. 1분마다(BUILDING_WORKER_SEC) 빌딩 방의 지시·결정 답을 가져와 대화방에 보낸다.
+// 일반 지시는 팀장 AI 에게, 결정 답(허락/거절)은 그 승인 요청을 한 AI 에게. 대화방에는 팀장님이 직접 보낸 것처럼 보이고, 행동 규칙(삭제·과금 전 승인 요청)은 그대로다.
+if(process.env.BUILDING_URL&&process.env.BUILDING_WORKER_KEY){
+  startBuildingWorker({url:process.env.BUILDING_URL,key:process.env.BUILDING_WORKER_KEY,intervalSec:Number(process.env.BUILDING_WORKER_SEC||60)||60,
+    getCtx:async()=>owner.isSet?userContext(owner.user):null,send:(ctx,{text,targets})=>dispatch(ctx,{text,targets,files:[],handoff:null}),
+    lead:()=>owner.user?.lead??null,adapterIds:adapters.map(a=>a.id)});
+}else console.log('AI 빌딩 지시 받기: 꺼짐 (BUILDING_URL·BUILDING_WORKER_KEY 없음)');
