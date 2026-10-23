@@ -13,12 +13,12 @@ test('ErrorWindow: 24시간 지난 오류는 세지 않는다', ()=>{
   assert.equal(w.count(),0);assert.equal(w.lastAt(),null);
 });
 
-test('workSummary: 마지막 질문 뒤의 답변만 센다', ()=>{
+test('workSummary: 마지막 질문 뒤의 답변만 센다 (대기열은 running 에 이미 들어 있어 두 번 세지 않는다)', ()=>{
   const ctx={running:new Set(['a','b']),queue:[{}],store:{state:{messages:[
     {id:1,role:'user'},{id:2,role:'assistant',status:'blocked'},{id:3,role:'assistant',status:'done',approvalRequested:true},
     {id:4,role:'user'},{id:5,role:'assistant',status:'blocked',error:'quota_cooldown'},{id:6,role:'assistant',status:'done',approvalRequested:true},{id:7,role:'assistant',status:'done'},
   ]}}};
-  assert.deepEqual(workSummary(ctx),{active:3,blocked:1,waiting:1});
+  assert.deepEqual(workSummary(ctx),{active:2,blocked:1,waiting:1});
   assert.deepEqual(workSummary(null),{active:0,blocked:0,waiting:0});
 });
 
