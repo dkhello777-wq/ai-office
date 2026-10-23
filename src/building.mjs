@@ -96,3 +96,86 @@ export function startBuildingReporter({url,key,version,intervalSec=300,getDisk,g
   timer?.unref?.();
   return ()=>clearTimer(timer);
 }
+
+// v0.10.20 빌딩 지시 받기: 팀장님이 빌딩 방에 남긴 지시와 결정 질문의 답(허락/거절)을 가져와 이 오피스 대화방에 보낸다.
+// BUILDING_URL + BUILDING_WORKER_KEY(빌딩 화면 → 방 열쇠 관리 → 일꾼 열쇠)가 있을 때만 켜진다.
+// 순서: 받기(claim) → 시작 알림(start) → 대화방에 보내기 → AI 답이 끝나면 완료 알림(finish, 답 첫 줄).
+export const BUILDING_MARK='[AI 빌딩에서 온 팀장님 지시]';
+export const BUILDING_ANSWER_MARK='[AI 빌딩에서 온 팀장님 답]';
+
+// 빌딩 지시 하나를 대화방에 보낼 글과 받는 AI 로 바꾼다. 결정 답은 그 승인 요청을 한 AI 에게, 일반 지시는 팀장 AI(없으면 첫 AI)에게.
+export function commandToSend(c,{messages=[],lead=null,adapterIds=[]}={}){
+  if(c.decision){
+    const n=/^m(\d+)$/.exec(String(c.decision.id??''));
+    const ask=n&&messages.find(m=>m.id===Number(n[1])&&m.role==='assistant'&&m.approvalRequested);
+    if(!ask||!adapterIds.includes(ask.adapter))return {error:'decision_gone'};
+    const what=oneLine(String(ask.text??'').replace(/^\s*\[승인 요청\]\s*/,''),200);
+    const text=c.decision.answer==='허락'
+      ?`${BUILDING_ANSWER_MARK} 허락합니다. 승인 요청하신 일을 진행하세요.\n(요청 내용: ${what})`
+      :`${BUILDING_ANSWER_MARK} 거절합니다. 승인 요청하신 일은 하지 말고, 그 일 없이 할 수 있는 부분만 마무리하세요.\n(요청 내용: ${what})`;
+    return {text,targets:[ask.adapter]};
+  }
+  const target=adapterIds.includes(lead)?lead:adapterIds[0];
+  if(!target)return {error:'no_adapter'};
+  const body=String(c.body??'').trim();
+  if(!body)return {error:'empty'};
+  return {text:`${BUILDING_MARK}\n${body}`,targets:[target]};
+}
+
+// 빌딩에서 온 질문의 AI 답이 다 끝났으면 완료 알림 내용을, 아직이면 null.
+export function commandResult(userMsg,messages){
+  const replies=messages.filter(m=>m.role==='assistant'&&m.replyTo===userMsg.id);
+  if(!replies.length||replies.some(m=>m.status==='running'))return null;
+  const done=replies.find(m=>m.status==='done');
+  if(done)return {ok:true,note:oneLine(done.text,200)||'답변 완료'};
+  return {ok:false,note:`AI 가 답하지 못했어요 (${replies[0].error??replies[0].status})`};
+}
+
+export function startBuildingWorker({url,key,intervalSec=60,maxPerTick=5,getCtx,send,lead=()=>null,adapterIds=[],worker='ai-office',fetchImpl=globalThis.fetch,log=console.log,setTimer=setInterval,clearTimer=clearInterval}){
+  const call=async(p,body={})=>{
+    const res=await fetchImpl(new URL(p,url),{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${key}`},body:JSON.stringify(body),signal:AbortSignal.timeout(15000)});
+    let json={};try{json=await res.json();}catch{}
+    if(!res.ok)throw Object.assign(new Error(`HTTP ${res.status} ${json.error??''}`.trim()),{status:res.status});
+    return json;
+  };
+  let okBefore=null,busy=false;
+  const tick=async()=>{
+    if(busy)return;busy=true;
+    try{
+      const ctx=await getCtx();if(!ctx)return;
+      const {store}=ctx;
+      // 1) 보낸 지시의 답이 끝났으면 빌딩에 완료를 알린다. 상태는 state.json 의 메시지에 남겨 재시작해도 이어간다.
+      for(const m of store.state.messages.filter(m=>m.role==='user'&&m.buildingCommand&&!m.buildingFinished)){
+        const r=commandResult(m,store.state.messages);if(!r)continue;
+        try{await call(`/api/floor/commands/${encodeURIComponent(m.buildingCommand)}/finish`,r);}
+        catch(e){if(!e.status||e.status>=500)throw e;}   // 404·409(취소·만료된 지시)는 다시 묻지 않는다
+        store.update(m.id,{buildingFinished:true});await store.save();
+      }
+      // 2) 새 지시 받기
+      for(let i=0;i<maxPerTick;i++){
+        const claim=await call('/api/floor/work/claim',{worker});
+        if(claim.offDuty||!claim.command)break;
+        const c=claim.command;
+        const started=await call(`/api/floor/commands/${encodeURIComponent(c.id)}/start`);
+        if(!started.ok)break;   // 받는 사이에 퇴근: 빌딩이 보관함으로 되돌렸다
+        const s=commandToSend(c,{messages:store.state.messages,lead:lead(),adapterIds});
+        if(s.error){
+          const note=s.error==='decision_gone'?'이미 지나간 질문이라 대화방에 보내지 않았어요':'보낼 AI 가 없어 대화방에 보내지 않았어요';
+          await call(`/api/floor/commands/${encodeURIComponent(c.id)}/finish`,{ok:false,note});continue;
+        }
+        const m=await send(ctx,s);
+        store.update(m.id,{buildingCommand:c.id});await store.save();
+        log(`[빌딩] 지시 받음 → ${s.targets.join(',')} (#${m.id})`);
+      }
+      if(okBefore!==true)log(`[빌딩] 지시 받기 시작 (${new URL(url).host}, ${intervalSec}초마다)`);
+      okBefore=true;
+    }catch(e){
+      if(okBefore!==false)log(`[빌딩] 지시 받기 실패: ${e.message} — 다음 간격에 다시 시도`);
+      okBefore=false;
+    }finally{busy=false;}
+  };
+  const ready=tick();
+  const timer=setTimer(tick,intervalSec*1000);
+  timer?.unref?.();
+  return {stop:()=>clearTimer(timer),tick,ready};
+}
