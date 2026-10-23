@@ -9,7 +9,7 @@
 // 최근 protectHours 시간 안에 바뀐 것은 진행 중일 수 있어 건드리지 않는다.
 //
 // 규칙: ① maxAgeDays 보다 오래된 기록은 항상 지운다. ② 사용률이 highPct% 이상이면 lowPct% 아래로 내려갈 때까지 오래된 것부터 지운다.
-import {statfs,readdir,stat,rm} from 'node:fs/promises';
+import {statfs,readdir,stat,rm,readFile} from 'node:fs/promises';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 
@@ -55,6 +55,13 @@ async function filesUnder(dir,out=[]){
   return out;
 }
 
+// v0.10.20 지금 이어가는 대화의 기록 파일은 지우지 않는다: state.json 의 sessions(AI별 세션 ID). Codex 는 sessions/…/rollout-…-<ID>.jsonl,
+// Claude 는 projects/<폴더>/<ID>.jsonl 이라 파일 경로에 ID 가 들어 있다. 이 파일이 지워지면 다음 질문이 "no rollout found" 로 실패했다(2026-10-23).
+export async function liveSessionIds(userDir){
+  try{const d=JSON.parse(await readFile(path.join(userDir,'state.json'),'utf8'));return Object.values(d?.sessions??{}).filter(v=>typeof v==='string'&&v.length>=8);}catch{return [];}
+}
+const isLive=(p,ids)=>ids.some(id=>p.includes(id));
+
 // 지울 수 있는 항목 목록 (오래된 것부터). 실행 증거는 폴더 단위, CLI 기록은 파일 단위.
 export async function listCandidates(usersDir){
   const items=[];
@@ -63,7 +70,8 @@ export async function listCandidates(usersDir){
     const runs=path.join(usersDir,u,'runs');
     let dirs=[];try{dirs=await readdir(runs);}catch{}
     for(const d of dirs){const p=path.join(runs,d);const r=await sizeOf(p);items.push({path:p,bytes:r.bytes,mtime:r.mtime,kind:'run'});}
-    for(const rel of CLI_LOG_DIRS)await filesUnder(path.join(usersDir,u,'home',rel),items);
+    const live=await liveSessionIds(path.join(usersDir,u));
+    for(const rel of CLI_LOG_DIRS){const fs=await filesUnder(path.join(usersDir,u,'home',rel));items.push(...fs.filter(f=>!isLive(f.path,live)));}
     for(const rel of CACHE_DIRS)await filesUnder(path.join(usersDir,u,'home',rel),items);
   }
   return items.sort((a,b)=>a.mtime-b.mtime);
@@ -143,6 +151,8 @@ export async function deletePath(usersDir,user,rel){
   let real;try{const {realpath}=await import('node:fs/promises');real=await realpath(target);}catch{return {error:'not_found'};}
   const baseReal=await (await import('node:fs/promises')).realpath(base);
   if(!(real===baseReal||real.startsWith(baseReal+path.sep)))return {error:'bad_path'};
+  const live=await liveSessionIds(baseReal);   // v0.10.20 이어가는 대화의 기록(또는 그것이 든 폴더)은 거부
+  if(live.length&&parts[0]==='home'&&(isLive(real,live)||(await filesUnder(real)).some(f=>isLive(f.path,live))))return {error:'in_use'};
   const z=await sizeOf(real);
   try{await rm(real,{recursive:true,force:true});}catch(e){return {error:'delete_failed',detail:e.code};}
   return {ok:true,path:rel,bytes:z.bytes};
