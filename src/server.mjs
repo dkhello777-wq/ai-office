@@ -299,6 +299,7 @@ async function attachMedia(ctx,adapter,id,since,extraText){
 // v0.10.11 자동 새 대화: config 에 sessionResetTokens 를 둔 AI 만(Grok 120k). 기본은 꺼짐 — Claude·Codex·Gemini 는 코딩 맥락을 잃지 않도록 절대 자동으로 세션을 버리지 않는다.
 const autoResetOn=adapter=>Number.isFinite(adapter.sessionResetTokens)&&adapter.sessionResetTokens>0;
 function sessionTooBig(adapter,usage){return autoResetOn(adapter)&&normalizeUsage(usage).input>adapter.sessionResetTokens;}
+const sessionGone=e=>/no rollout found for thread id|No conversation found with session ID|thread\/resume failed/i.test(`${e.stderr??''}\n${e.text??''}\n${e.message??''}`);   // v0.10.20
 async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSession=true}){
   const {store}=ctx;
   const reply=store.add({role:'assistant',adapter:adapter.id,replyTo,kind,status:'running',text:'',...extra});
@@ -332,21 +333,30 @@ async function runOne(ctx,adapter,{prompt,replyTo,kind='answer',extra={},useSess
       store.update(reply.id,{status:'blocked',error:'budget_exceeded',budget:{month:b.month,tokens:b.tokens,limit:b.limit}});
       await persistThenEmit(ctx,reply.id);return store.get(reply.id);
     }
-    const session=useSession?store.session(adapter.id):null,epoch=store.epoch(adapter.id);   // 세대 기록 (GPT R09). 병렬 작업(task)은 세션을 쓰지도 남기지도 않는다 (검수 V18)
+    let session=useSession?store.session(adapter.id):null,epoch=store.epoch(adapter.id);   // 세대 기록 (GPT R09). 병렬 작업(task)은 세션을 쓰지도 남기지도 않는다 (검수 V18)
     let lastEmit=0;
     const onChunk=(_s,info)=>{   // 스트리밍: 150ms 에 한 번만 화면으로. 저장·증거에는 쓰지 않는다.
       const now=Date.now();if(now-lastEmit<150)return;lastEmit=now;
       emit(ctx,'partial',{id:reply.id,adapter:adapter.id,partial:info.partial,bytes:info.bytes,elapsedMs:info.elapsedMs});
     };
     runStart=Date.now();   // v0.10.2 이 시각 뒤에 생긴 미디어 파일을 답변에 붙인다
-    const r=await runAdapter(adapter,{prompt,cwd:ctx.workspace,session,timeoutMs:Number.isSafeInteger(adapter.runTimeoutMs)&&adapter.runTimeoutMs>0?adapter.runTimeoutMs:config.timeoutMs,evidenceDir,extraEnv:userEnv(ctx,adapter),onChunk,signal:ac.signal});
+    const go=()=>runAdapter(adapter,{prompt,cwd:ctx.workspace,session,timeoutMs:Number.isSafeInteger(adapter.runTimeoutMs)&&adapter.runTimeoutMs>0?adapter.runTimeoutMs:config.timeoutMs,evidenceDir,extraEnv:userEnv(ctx,adapter),onChunk,signal:ac.signal});
+    let r,sessionLost=false;
+    try{r=await go();}
+    catch(e){   // v0.10.20 이어갈 대화 기록이 서버에서 사라짐(Codex "no rollout found", Claude "No conversation found") — 고칠 길이 없으니 이번 한 번만 새 대화로 다시 보낸다
+      if(!session||e.cancelled||!sessionGone(e))throw e;
+      console.log(`[run] #${reply.id} ${adapter.id} 이어갈 대화 기록 없음 → 새 대화로 다시 시도`);
+      store.resetSession(adapter.id);session=null;epoch=store.epoch(adapter.id);sessionLost=true;
+      if(isDisabled(ctx)||ac.signal.aborted)throw Object.assign(new Error('cancelled'),{cancelled:true});
+      r=await go();
+    }
     if(useSession)store.setSession(adapter.id,r.session,epoch);   // "새 대화" 이후에 끝난 실행은 옛 세션을 되살리지 않는다
     const used=store.addUsage(adapter.id,r.usage);
     mediaText=`${r.stdout??''}\n${r.stderr??''}`;
     const approvalRequested=r.text.trimStart().startsWith(APPROVAL_MARK);   // v0.8.7: 삭제·과금 전 멈춰서 허락을 구한 답변
     if(approvalRequested&&kind==='task'&&!watching(ctx))push.notify('ask',{title:`✋ ${labelOf(adapter.id)}가 허락을 기다려요`,body:firstLine(r.text.replace(/^\s*\[승인 요청\]\s*/,'')),url:`/#m${reply.id}`,tag:`a${reply.id}`}).catch(()=>{});   // v0.10: 팀원은 종합까지 기다리지 않고 바로
     const autoReset=useSession&&sessionTooBig(adapter,r.usage);if(autoReset)store.resetSession(adapter.id);   // v0.10.11 대화가 커지면 다음부터 자동 새 대화 (매번 '새 대화'를 누르지 않아도 됨)
-    store.update(reply.id,{status:'done',text:r.text,approvalRequested,usage:r.usage,elapsedMs:r.elapsedMs,session:r.session??session,sessionReset:autoReset||undefined,hash:sha256(r.text),exitCode:r.exitCode,evidence:r.evidence,envBlockedNames:r.envBlockedNames,authCheck:publicAuth(auth),usageMonth:{...used}});
+    store.update(reply.id,{status:'done',text:r.text,approvalRequested,usage:r.usage,elapsedMs:r.elapsedMs,session:r.session??session,sessionReset:autoReset||undefined,sessionLost:sessionLost||undefined,hash:sha256(r.text),exitCode:r.exitCode,evidence:r.evidence,envBlockedNames:r.envBlockedNames,authCheck:publicAuth(auth),usageMonth:{...used}});
   }catch(e){
     const evidenceFailed=/^evidence_/.test(e.message);
     const stderrTail=typeof e.stderr==='string'&&e.stderr.trim()?e.stderr.trim().split('\n').slice(-8).map(l=>maskLine(l.slice(0,300))).join('\n').slice(-1200):null;   // v0.8.1: 실패 원인을 화면에서 볼 수 있게 stderr 꼬리(가림 처리)를 함께 둔다 — 원문은 증거 파일에
